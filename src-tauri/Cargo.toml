@@ -1,0 +1,56 @@
+[package]
+name = "lumen-pdf"
+version = "1.0.0"
+description = "Lumen PDF — a premium desktop PDF editor with an integrated Illinois mortgage calculator."
+authors = ["BetterCredit.io"]
+edition = "2021"
+rust-version = "1.77"
+
+# The library half of a Tauri app. `tauri build` compiles this into the binary
+# defined by main.rs. The `_lib` suffix avoids a name clash with the binary on
+# Windows (Tauri convention).
+[lib]
+name = "lumen_pdf_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-log = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# PDF engine. pdfium-render binds to the Pdfium dynamic library at RUNTIME via
+# libloading, so this crate compiles without the binary present; the binary
+# (pdfium.dll on Windows) must ship alongside the executable. See README.
+pdfium-render = "0.9"
+# Decoupled PNG encoding from the raw RGBA buffer Pdfium hands back, so we are
+# not tied to pdfium-render's internal `image` version.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+thiserror = "2"
+log = "0.4"
+parking_lot = "0.12"
+uuid = { version = "1", features = ["v4"] }
+
+# The updater is desktop-only; mobile targets use store-based updates.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
+
+[features]
+# Enabled by `tauri build`; turns on the production custom-protocol asset path.
+custom-protocol = ["tauri/custom-protocol"]
+
+# Smaller, faster release binaries for a snappier download + launch.
+# NOTE: panic unwinding is intentionally LEFT ON (no `panic = "abort"`) so a
+# panic inside the PDFium worker thread unwinds and is recovered per-request
+# (see engine.rs `guard`) rather than aborting the whole application.
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

@@ -1,0 +1,59 @@
+name: Release (Windows)
+
+# Build the signed Windows installer + auto-update artifacts and publish a draft
+# GitHub release. Trigger by pushing a version tag (e.g. v1.0.0) or manually.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate app icons
+        run: npm run icons
+
+      - name: Fetch PDFium runtime
+        run: npm run pdfium win
+
+      - name: Build, sign, and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Generate once with `npm run tauri signer generate`.
+          # Store the private key + password as repository secrets.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Lumen PDF v__VERSION__"
+          releaseBody: |
+            Lumen PDF for Windows.
+
+            Download the `.exe` installer below to install. Existing installs
+            update automatically via the built-in updater.
+          releaseDraft: true
+          prerelease: false
+          # NSIS installer + signed updater artifacts (latest.json) for x64.
+          args: --target x86_64-pc-windows-msvc

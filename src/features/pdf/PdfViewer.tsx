@@ -1,0 +1,131 @@
+/**
+ * The scrolling page container.
+ *
+ * Responsibilities:
+ *   • compute the effective render scale for fit-to-width / fit-to-page modes,
+ *     recomputing on container resize;
+ *   • lay out every page in a vertical column (lazy-rendered by {@link PdfPage});
+ *   • a scroll-spy that reports the centered page as `currentPage`; and
+ *   • consume programmatic scroll requests (thumbnail / page input / keyboard).
+ */
+import { useEffect, useLayoutEffect, useRef } from "react";
+import { useDocumentStore } from "@/stores/document-store";
+import { PdfPage } from "./PdfPage";
+
+const PAGE_GAP = 24; // px between pages
+const VIEWPORT_PADDING = 32; // px around the page column
+
+export function PdfViewer() {
+  const meta = useDocumentStore((s) => s.meta);
+  const scale = useDocumentStore((s) => s.scale);
+  const fitMode = useDocumentStore((s) => s.fitMode);
+  const setScale = useDocumentStore((s) => s.setScale);
+  const setCurrentPage = useDocumentStore((s) => s.setCurrentPage);
+  const pendingScrollPage = useDocumentStore((s) => s.pendingScrollPage);
+  const clearPendingScroll = useDocumentStore((s) => s.clearPendingScroll);
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const rafRef = useRef<number | null>(null);
+
+  const maxPageWidth = meta
+    ? Math.max(...meta.pages.map((p) => p.width), 1)
+    : 1;
+  const maxPageHeight = meta
+    ? Math.max(...meta.pages.map((p) => p.height), 1)
+    : 1;
+
+  // Recompute fit scale on mount, document change, fit-mode change, and resize.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !meta || fitMode === "custom") return;
+
+    function computeFit() {
+      const node = scrollRef.current;
+      if (!node) return;
+      const availW = node.clientWidth - VIEWPORT_PADDING * 2;
+      const availH = node.clientHeight - VIEWPORT_PADDING * 2;
+      let next = 1;
+      if (fitMode === "width") {
+        next = availW / maxPageWidth;
+      } else if (fitMode === "page") {
+        next = Math.min(availW / maxPageWidth, availH / maxPageHeight);
+      }
+      // Preserve the fit mode while updating the numeric scale.
+      setScale(next, fitMode);
+    }
+
+    computeFit();
+    const observer = new ResizeObserver(computeFit);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [meta, fitMode, maxPageWidth, maxPageHeight, setScale]);
+
+  // Scroll-spy: report the most-centered page as current.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !meta) return;
+
+    function onScroll() {
+      if (rafRef.current != null) return;
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null;
+        const node = scrollRef.current;
+        if (!node) return;
+        const center = node.scrollTop + node.clientHeight / 2;
+        const children = node.querySelectorAll<HTMLElement>("[data-page-wrap]");
+        let best = 0;
+        let bestDist = Infinity;
+        children.forEach((child) => {
+          const top = child.offsetTop;
+          const mid = top + child.offsetHeight / 2;
+          const dist = Math.abs(mid - center);
+          if (dist < bestDist) {
+            bestDist = dist;
+            best = Number(child.dataset.pageWrap);
+          }
+        });
+        setCurrentPage(best);
+      });
+    }
+
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+    };
+  }, [meta, setCurrentPage]);
+
+  // Consume programmatic scroll requests.
+  useEffect(() => {
+    if (pendingScrollPage == null) return;
+    const node = scrollRef.current;
+    if (!node) return;
+    const target = node.querySelector<HTMLElement>(
+      `[data-page-wrap="${pendingScrollPage}"]`,
+    );
+    if (target) {
+      node.scrollTo({ top: target.offsetTop - VIEWPORT_PADDING, behavior: "smooth" });
+    }
+    clearPendingScroll();
+  }, [pendingScrollPage, clearPendingScroll]);
+
+  if (!meta) return null;
+
+  return (
+    <div
+      ref={scrollRef}
+      className="page-canvas-bg scroll-thin h-full w-full overflow-auto"
+    >
+      <div
+        className="mx-auto flex w-fit flex-col items-center"
+        style={{ padding: VIEWPORT_PADDING, gap: PAGE_GAP }}
+      >
+        {meta.pages.map((page) => (
+          <div key={page.pageIndex} data-page-wrap={page.pageIndex}>
+            <PdfPage size={page} scale={scale} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

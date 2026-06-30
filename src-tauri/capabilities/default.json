@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core capabilities for the main window: a safe baseline plus native file open/save dialogs, confirmation dialogs, and self-update. File reads/writes happen through trusted Rust commands, so no broad filesystem permission is granted to the webview.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-message",
+    "dialog:allow-ask",
+    "updater:default"
+  ]
+}

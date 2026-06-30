@@ -1,0 +1,58 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+dist-ssr/
+build/
+*.local
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/gen/
+src-tauri/Cargo.lock
+# Keep the pdfium runtime libs out of git (downloaded at build time)
+src-tauri/binaries/
+src-tauri/lib/*.dll
+src-tauri/lib/*.so
+src-tauri/lib/*.dylib
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+# Tauri updater signing keys — NEVER commit these
+*.key
+*.pem
+~/.tauri/
+
+# Test / coverage
+coverage/
+.vitest/
+
+# Generated app icons (produced from code by `npm run icons`).
+# The icon is defined in scripts/gen-icon.mjs; the raster/.ico/.icns set is
+# regenerated at build time, so it is not committed.
+/assets/
+/src-tauri/icons/
