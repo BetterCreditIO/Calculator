@@ -104,6 +104,8 @@ pub enum AnnotationType {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Annotation {
+    /// Wire-contract field (frontend identity); not consumed by the baker.
+    #[allow(dead_code)]
     pub id: String,
     #[serde(rename = "type")]
     pub kind: AnnotationType,
@@ -111,6 +113,9 @@ pub struct Annotation {
     pub rects: Vec<Rect>,
     pub color: String,
     pub opacity: f32,
+    /// Comment body. Currently comments bake as a visible marker only; the
+    /// note text lives in the app session (see ARCHITECTURE "future work").
+    #[allow(dead_code)]
     #[serde(default)]
     pub note: Option<String>,
 }
@@ -152,6 +157,9 @@ pub enum PageOp {
 pub struct TextEdit {
     pub id: String,
     pub page_index: usize,
+    /// Wire-contract field (span identity in the frontend text layer); the
+    /// save path matches by geometry + text instead.
+    #[allow(dead_code)]
     pub span_index: usize,
     pub original_bounds: Rect,
     pub original_text: String,
