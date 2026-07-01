@@ -43,12 +43,24 @@ export function PdfPage({ size, scale }: PdfPageProps) {
   const widthPx = Math.round(size.width * scale);
   const heightPx = Math.round(size.height * scale);
 
-  // Fetch the high-DPI raster when the page is near the viewport / scale changes.
+  // The raster is fetched at a DEBOUNCED scale: during continuous zoom
+  // (Ctrl+wheel) the layout rescales instantly (the browser stretches the
+  // current raster, momentarily soft) and the crisp re-render lands once the
+  // zoom settles. This keeps zooming perfectly smooth on large documents.
+  const [rasterScale, setRasterScale] = useState(scale);
+  useEffect(() => {
+    if (rasterScale === scale) return;
+    const t = setTimeout(() => setRasterScale(scale), 160);
+    return () => clearTimeout(t);
+  }, [scale, rasterScale]);
+
+  // Fetch the high-DPI raster when the page is near the viewport / the settled
+  // zoom level changes.
   useEffect(() => {
     if (!meta || !inView) return;
     let cancelled = false;
     const dpr = window.devicePixelRatio || 1;
-    const renderScale = scale * dpr;
+    const renderScale = rasterScale * dpr;
 
     setLoading(true);
     setErrored(false);
@@ -68,7 +80,7 @@ export function PdfPage({ size, scale }: PdfPageProps) {
     return () => {
       cancelled = true;
     };
-  }, [meta, inView, scale, size.pageIndex]);
+  }, [meta, inView, rasterScale, size.pageIndex]);
 
   // Lazily load the text layer for selection / editing.
   useEffect(() => {

@@ -14,6 +14,7 @@ import {
   openPdfBytes as openPdfBytesCmd,
   closePdf as closePdfCmd,
   getPageText,
+  type SearchHit,
 } from "@/lib/tauri";
 
 export type FitMode = "width" | "page" | "custom";
@@ -43,6 +44,10 @@ interface DocumentState {
   /** Cached text layers by page index (lazily fetched). */
   textLayers: Record<number, PageTextLayer | undefined>;
 
+  /** The search hit currently navigated to (highlighted on its page). */
+  activeSearchHit: SearchHit | null;
+  setActiveSearchHit: (hit: SearchHit | null) => void;
+
   openFromPath: (path: string) => Promise<void>;
   openFromBytes: (bytes: Uint8Array, name: string) => Promise<void>;
   close: () => Promise<void>;
@@ -70,6 +75,8 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   fitMode: "width",
   pendingScrollPage: null,
   textLayers: {},
+  activeSearchHit: null,
+  setActiveSearchHit: (activeSearchHit) => set({ activeSearchHit }),
 
   openFromPath: async (path) => {
     await loadDocument(set, get, () => openPdfCmd(path));
@@ -95,6 +102,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       currentPage: 0,
       pendingScrollPage: null,
       textLayers: {},
+      activeSearchHit: null,
     });
   },
 
@@ -154,7 +162,12 @@ async function loadDocument(
       /* ignore */
     }
   }
-  set({ status: "loading", error: null, textLayers: {} });
+  set({
+    status: "loading",
+    error: null,
+    textLayers: {},
+    activeSearchHit: null,
+  });
   try {
     const meta = await loader();
     set({ meta, status: "ready", currentPage: 0, error: null });

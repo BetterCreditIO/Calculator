@@ -73,20 +73,29 @@ export interface TextSpan {
   text: string;
   /** Tight bounding box of the run in top-left point space. */
   bounds: Rect;
-  /** Approximate font size in points (derived from glyph height). */
+  /**
+   * Real font size in points as reported by the PDF (not glyph height), when
+   * available; otherwise derived from the glyph box.
+   */
   fontSize: number;
-  /** Reported font family/name, when available from the PDF. */
+  /** Reported font family/name from the PDF (subset prefix stripped). */
   fontName: string | null;
-  /** Whether the run is rendered bold / italic (best-effort heuristic). */
+  /** Style flags from the font's weight / name. */
   bold: boolean;
   italic: boolean;
-  /** Text color as #rrggbb, best effort. */
+  /** Text fill color as #rrggbb, when the PDF reports one. */
   color: string | null;
   /**
    * Baseline-relative rotation in degrees. 0 for normal horizontal text.
    * Non-zero values let the overlay rotate the editable box to match.
    */
   rotation: number;
+  /**
+   * Y of the text baseline in top-left point space. Re-stamped edits are
+   * positioned on this exact baseline, which is what keeps replacement text
+   * vertically locked to the original line.
+   */
+  baseline: number;
 }
 
 /** The selectable/editable text layer for a single page. */
@@ -152,5 +161,9 @@ export interface TextEdit {
   newText: string;
   fontSize: number;
   fontName: string | null;
+  bold: boolean;
+  italic: boolean;
   color: string;
+  /** Baseline Y (top-left point space) the replacement text is stamped on. */
+  baseline: number;
 }

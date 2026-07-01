@@ -490,51 +490,159 @@ fn to_top_left_rect(r: &PdfRect, page_height: f32) -> Rect {
     }
 }
 
-/// Accumulates consecutive characters into a single line-level text span.
+/// Style attributes shared by every character in a span. Runs split whenever
+/// any of these change, so each span is a single styled, editable unit — the
+/// resolution the overlay needs for faithful font matching and edit previews.
+#[derive(Clone, PartialEq)]
+struct CharStyle {
+    font_name: Option<String>,
+    /// Matrix-scaled font size in points (0.0 when Pdfium reports none).
+    font_size: f32,
+    bold: bool,
+    italic: bool,
+    /// Fill color as "#rrggbb", when reported.
+    color: Option<String>,
+}
+
+/// Classify a Pdfium font weight as bold (CSS convention: >= 600).
+fn is_bold_weight(weight: &PdfFontWeight) -> bool {
+    match weight {
+        PdfFontWeight::Weight600
+        | PdfFontWeight::Weight700Bold
+        | PdfFontWeight::Weight800
+        | PdfFontWeight::Weight900 => true,
+        PdfFontWeight::Custom(value) => *value >= 600,
+        _ => false,
+    }
+}
+
+fn color_to_hex(color: &PdfColor) -> String {
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        color.red(),
+        color.green(),
+        color.blue()
+    )
+}
+
+/// Read the style of one character. Font names keep their subset prefix
+/// ("ABCDEF+…") — the save path uses it to detect subsetted embedded fonts.
+fn read_char_style(ch: &PdfPageTextChar) -> CharStyle {
+    let raw_name = ch.font_name();
+    let font_name = if raw_name.trim().is_empty() {
+        None
+    } else {
+        Some(raw_name.trim().to_string())
+    };
+    let name_lower = font_name.as_deref().unwrap_or("").to_lowercase();
+
+    // Weight is unreliable for built-in fonts, so the name is a co-signal.
+    let bold = ch
+        .font_weight()
+        .as_ref()
+        .map(is_bold_weight)
+        .unwrap_or(false)
+        || name_lower.contains("bold")
+        || name_lower.contains("black")
+        || name_lower.contains("heavy");
+    let italic =
+        ch.font_is_italic() || name_lower.contains("italic") || name_lower.contains("oblique");
+
+    let mut font_size = ch.scaled_font_size().value;
+    if !font_size.is_finite() || font_size <= 0.0 {
+        font_size = 0.0; // finish() falls back to the glyph-box height
+    }
+
+    CharStyle {
+        font_name,
+        font_size,
+        bold,
+        italic,
+        color: ch.fill_color().ok().map(|c| color_to_hex(&c)),
+    }
+}
+
+/// Accumulates consecutive same-style characters into a single text span.
 struct SpanBuilder {
     text: String,
     x0: f32,
     y0: f32,
     x1: f32,
     y1: f32,
-    font_size: f32,
+    line_height: f32,
     line_center: f32,
+    style: CharStyle,
+    /// Baseline Y (top-left space) captured from the first character.
+    baseline: f32,
 }
 
 impl SpanBuilder {
-    fn start(c: char, rect: &Rect) -> Self {
+    fn start(c: char, rect: &Rect, style: CharStyle, baseline: f32) -> Self {
         Self {
             text: c.to_string(),
             x0: rect.x,
             y0: rect.y,
             x1: rect.x + rect.width,
             y1: rect.y + rect.height,
-            font_size: rect.height,
+            line_height: rect.height,
             line_center: rect.y + rect.height / 2.0,
+            style,
+            baseline,
         }
     }
 
-    /// Whether `rect` (the next glyph) belongs to this same run.
-    fn accepts(&self, rect: &Rect) -> bool {
+    /// Whether the next glyph belongs to this run: same line, no column-sized
+    /// horizontal gap, and (for non-whitespace) the same style. Whitespace
+    /// characters often carry arbitrary font records, so they never split a
+    /// run on style alone; likewise, a run that so far contains only
+    /// whitespace adopts the first styled character's style in `push`.
+    fn accepts(&self, c: char, rect: &Rect, style: &CharStyle) -> bool {
         let center = rect.y + rect.height / 2.0;
-        let same_line = (center - self.line_center).abs() <= self.font_size * 0.6;
+        let same_line = (center - self.line_center).abs() <= self.line_height * 0.6;
         let gap = rect.x - self.x1;
-        // Break on large horizontal gaps (column / table-cell boundaries).
-        let close_enough = gap <= self.font_size * 2.0;
-        same_line && close_enough
+        let close_enough = gap <= self.line_height * 2.0;
+        if !(same_line && close_enough) {
+            return false;
+        }
+        if c.is_whitespace() || self.text.trim().is_empty() {
+            return true;
+        }
+        self.style_compatible(style)
     }
 
-    fn push(&mut self, c: char, rect: &Rect) {
+    fn style_compatible(&self, style: &CharStyle) -> bool {
+        let size_ok = (self.style.font_size - style.font_size).abs() <= 0.5
+            || self.style.font_size == 0.0
+            || style.font_size == 0.0;
+        self.style.font_name == style.font_name
+            && self.style.bold == style.bold
+            && self.style.italic == style.italic
+            && self.style.color == style.color
+            && size_ok
+    }
+
+    fn push(&mut self, c: char, rect: &Rect, style: &CharStyle, baseline: f32) {
+        // A run that started with whitespace carries that whitespace's junk
+        // font record; adopt the first styled character's style instead.
+        if !c.is_whitespace() && self.text.trim().is_empty() {
+            self.style = style.clone();
+            self.baseline = baseline;
+        }
         self.text.push(c);
         self.x0 = self.x0.min(rect.x);
         self.y0 = self.y0.min(rect.y);
         self.x1 = self.x1.max(rect.x + rect.width);
         self.y1 = self.y1.max(rect.y + rect.height);
-        self.font_size = self.font_size.max(rect.height);
+        self.line_height = self.line_height.max(rect.height);
         self.line_center = (self.line_center + (rect.y + rect.height / 2.0)) / 2.0;
     }
 
     fn finish(self, index: usize) -> TextSpan {
+        let font_size = if self.style.font_size > 0.0 {
+            self.style.font_size
+        } else {
+            (self.y1 - self.y0).max(1.0)
+        };
         TextSpan {
             index,
             text: self.text,
@@ -544,17 +652,18 @@ impl SpanBuilder {
                 width: (self.x1 - self.x0).max(0.0),
                 height: (self.y1 - self.y0).max(0.0),
             },
-            font_size: self.font_size,
-            font_name: None,
-            bold: false,
-            italic: false,
-            color: None,
+            font_size,
+            font_name: self.style.font_name,
+            bold: self.style.bold,
+            italic: self.style.italic,
+            color: self.style.color,
             rotation: 0.0,
+            baseline: self.baseline,
         }
     }
 }
 
-/// Group a page's characters into line-level spans suitable for an overlay.
+/// Group a page's characters into style-aware, line-level spans.
 fn build_spans(text: &PdfPageText, page_height: f32) -> Vec<TextSpan> {
     let mut spans: Vec<TextSpan> = Vec::new();
     let mut current: Option<SpanBuilder> = None;
@@ -574,14 +683,22 @@ fn build_spans(text: &PdfPageText, page_height: f32) -> Vec<TextSpan> {
             continue;
         };
         let rect = to_top_left_rect(&bounds, page_height);
+        let style = read_char_style(&ch);
+        // Baseline from the char origin; fall back to ~80% of the glyph box
+        // (a typical ascent fraction) when Pdfium can't report one.
+        let baseline = ch
+            .origin()
+            .ok()
+            .map(|(_, y)| page_height - y.value)
+            .unwrap_or(rect.y + rect.height * 0.8);
 
         match current.as_mut() {
-            Some(b) if b.accepts(&rect) => b.push(c, &rect),
+            Some(b) if b.accepts(c, &rect, &style) => b.push(c, &rect, &style, baseline),
             _ => {
                 if let Some(b) = current.take() {
                     spans.push(b.finish(0));
                 }
-                current = Some(SpanBuilder::start(c, &rect));
+                current = Some(SpanBuilder::start(c, &rect, style, baseline));
             }
         }
     }
@@ -653,16 +770,26 @@ fn search_document(pdfium: &Pdfium, bytes: &[u8], query: &str) -> PdfResult<Vec<
 // Save / edit pipeline
 // ===========================================================================
 //
-// Strategy (see ARCHITECTURE.md "Text editing fidelity"):
-//   • Markup (highlight / underline / strikethrough / redaction) is baked in as
-//     filled rectangle path objects at the recorded geometry.
-//   • In-place text edits white-out the original glyph region with an opaque
-//     rectangle, then stamp the replacement string as a new text object at the
-//     same baseline and size using a standard font.
+// TEXT-EDIT FIDELITY STRATEGY (two tiers, best-first):
 //
-// These calls target the pdfium-render 0.9 page-object API. They are the most
-// version-sensitive surface in the backend; if a point release renames an
-// object constructor, the fix is localized to the helpers below.
+//   Tier 1 — TRUE IN-PLACE EDIT. Find the page's text object that draws the
+//   edited run (bounds overlap + text match) and rewrite its string with
+//   FPDFText_SetText. The object keeps its ORIGINAL font, size, matrix, color,
+//   and render mode — the same mechanism Acrobat uses for same-font edits.
+//   Guard: if the original font is a subsetted embed ("ABCDEF+…") it may lack
+//   glyphs for characters not already used somewhere in that object, so the
+//   in-place path is only taken when every replacement character is covered.
+//   NOTE: set_text does NOT mark page content dirty in pdfium-render 0.9, so
+//   `page.regenerate_content()` is called explicitly after in-place edits.
+//
+//   Tier 2 — WHITE-OUT + RE-STAMP (fallback). Cover the original glyph region,
+//   then stamp the replacement as a new text object on the ORIGINAL BASELINE at
+//   the extracted font size and fill color, using the closest PDF standard font
+//   (Helvetica/Times/Courier × bold/italic) matched from the original font
+//   name. This is the practical ceiling when the original font can't be reused.
+//
+// Markup (highlight / underline / strikethrough / redaction) is baked in as
+// filled rectangle path objects at the recorded geometry.
 
 fn save_document(
     pdfium: &Pdfium,
@@ -676,12 +803,210 @@ fn save_document(
     for annotation in annotations {
         apply_annotation(&document, annotation)?;
     }
-    for edit in edits {
-        apply_edit(&mut document, edit)?;
+
+    // Group edits per page so content regeneration happens once per page.
+    let mut pages_with_edits: Vec<usize> = edits.iter().map(|e| e.page_index).collect();
+    pages_with_edits.sort_unstable();
+    pages_with_edits.dedup();
+
+    for page_index in pages_with_edits {
+        let page_edits: Vec<&TextEdit> = edits
+            .iter()
+            .filter(|e| e.page_index == page_index)
+            .collect();
+        apply_page_edits(&mut document, page_index, &page_edits)?;
     }
 
     document.save_to_file(output_path)?;
     Ok(())
+}
+
+/// Apply all edits for one page: try the in-place tier first, then fall back
+/// to white-out + re-stamp for whatever couldn't be edited in place.
+fn apply_page_edits(
+    document: &mut PdfDocument,
+    page_index: usize,
+    edits: &[&TextEdit],
+) -> PdfResult<()> {
+    let mut fallback: Vec<&TextEdit> = Vec::new();
+
+    // Tier 1 (immutable document borrow; page objects mutate via handles).
+    {
+        let pages = document.pages();
+        let mut page = pages
+            .get(page_index as i32)
+            .map_err(|_| PdfError::PageOutOfRange(page_index))?;
+        let mut mutated = false;
+
+        for edit in edits {
+            if try_set_text_in_place(&mut page, edit)? {
+                log::info!(
+                    "edit {}: in-place text-object edit (original font preserved)",
+                    edit.id
+                );
+                mutated = true;
+            } else {
+                fallback.push(edit);
+            }
+        }
+
+        // set_text does not trip pdfium-render's content-dirty flag; without
+        // this call the rewritten text would silently not survive the save.
+        if mutated {
+            page.regenerate_content()?;
+        }
+    }
+
+    // Tier 2 (needs &mut document for fonts_mut).
+    for edit in fallback {
+        log::info!(
+            "edit {}: fallback white-out + matched-font re-stamp",
+            edit.id
+        );
+        apply_edit_fallback(document, edit)?;
+    }
+
+    Ok(())
+}
+
+/// Attempt a true in-place edit: locate the text object drawing the edited
+/// run and rewrite its string. Returns Ok(false) when no safe match exists.
+fn try_set_text_in_place(page: &mut PdfPage, edit: &TextEdit) -> PdfResult<bool> {
+    let original = edit.original_text.trim();
+    if original.is_empty() {
+        return Ok(false);
+    }
+    let page_height = page.height().value;
+    let target = to_pdf_rect(&edit.original_bounds, page_height);
+    // Unknown font names are treated as subsetted: we cannot prove the font
+    // carries glyphs for new characters, so require coverage conservatively.
+    let subsetted = edit.font_name.is_none() || is_subset_font_name(edit.font_name.as_deref());
+
+    for mut object in page.objects().iter() {
+        let Some(text_object) = object.as_text_object_mut() else {
+            continue;
+        };
+        let Ok(quad) = text_object.bounds() else {
+            continue;
+        };
+        let obj_rect = quad.to_rect();
+        // The edited run must lie (mostly) inside this object's box.
+        if overlap_fraction(&obj_rect, &target) < 0.5 {
+            continue;
+        }
+
+        let existing = text_object.text();
+        if existing.trim().is_empty() {
+            continue; // empty text object overlapping the run — keep looking
+        }
+
+        let updated = if existing == original {
+            edit.new_text.clone()
+        } else if existing.contains(original) {
+            // The run may occur several times in this object ("100 … 100").
+            // Pick the occurrence whose position matches the edit's horizontal
+            // offset within the object's box.
+            let obj_width = (obj_rect.right().value - obj_rect.left().value).max(1.0);
+            let fraction =
+                ((target.left().value - obj_rect.left().value) / obj_width).clamp(0.0, 1.0);
+            match replace_occurrence_near(&existing, original, &edit.new_text, fraction) {
+                Some(updated) => updated,
+                None => continue,
+            }
+        } else {
+            // Geometric match but different text (whitespace synthesis in the
+            // text page, or an earlier overlapping edit) — try the next object.
+            continue;
+        };
+
+        // Subsetted embedded fonts only carry glyphs for characters the
+        // document originally used; introducing new ones would render blank.
+        if subsetted && !replacement_chars_covered(&edit.new_text, &existing) {
+            return Ok(false);
+        }
+
+        text_object
+            .set_text(updated.as_str())
+            .map_err(PdfError::from)?;
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+/// Replace the occurrence of `pattern` in `text` whose byte offset is closest
+/// to `expected_fraction` (0..1) of the text's length — a positional proxy for
+/// "the occurrence the user actually edited".
+fn replace_occurrence_near(
+    text: &str,
+    pattern: &str,
+    replacement: &str,
+    expected_fraction: f32,
+) -> Option<String> {
+    if pattern.is_empty() {
+        return None;
+    }
+    let target = expected_fraction.clamp(0.0, 1.0) * text.len() as f32;
+    let mut best: Option<usize> = None;
+    let mut best_distance = f32::MAX;
+    let mut from = 0usize;
+    while let Some(found) = text[from..].find(pattern) {
+        let index = from + found;
+        let distance = (index as f32 - target).abs();
+        if distance < best_distance {
+            best_distance = distance;
+            best = Some(index);
+        }
+        from = index + pattern.len();
+        if from >= text.len() {
+            break;
+        }
+    }
+    best.map(|index| {
+        let mut out = String::with_capacity(text.len() + replacement.len());
+        out.push_str(&text[..index]);
+        out.push_str(replacement);
+        out.push_str(&text[index + pattern.len()..]);
+        out
+    })
+}
+
+/// True when a PDF font name carries the "ABCDEF+" subset-embedding prefix.
+fn is_subset_font_name(name: Option<&str>) -> bool {
+    match name {
+        Some(name) if name.len() > 7 => {
+            let bytes = name.as_bytes();
+            bytes[6] == b'+' && bytes[..6].iter().all(|b| b.is_ascii_uppercase())
+        }
+        _ => false,
+    }
+}
+
+/// Every non-whitespace replacement character must already occur in the text
+/// the object draws today (a conservative proxy for subset glyph coverage).
+fn replacement_chars_covered(new_text: &str, existing: &str) -> bool {
+    let available: std::collections::HashSet<char> = existing.chars().collect();
+    new_text
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .all(|c| available.contains(&c))
+}
+
+/// Fraction of `target`'s area covered by `outer` (both bottom-left space).
+fn overlap_fraction(outer: &PdfRect, target: &PdfRect) -> f32 {
+    let ix = (outer.right().value.min(target.right().value)
+        - outer.left().value.max(target.left().value))
+    .max(0.0);
+    let iy = (outer.top().value.min(target.top().value)
+        - outer.bottom().value.max(target.bottom().value))
+    .max(0.0);
+    let target_area = (target.right().value - target.left().value).max(0.0)
+        * (target.top().value - target.bottom().value).max(0.0);
+    if target_area <= 0.0 {
+        0.0
+    } else {
+        (ix * iy) / target_area
+    }
 }
 
 /// Convert our top-left point rect back into a Pdfium bottom-left `PdfRect`.
@@ -751,11 +1076,83 @@ fn apply_annotation(document: &PdfDocument, annotation: &Annotation) -> PdfResul
     Ok(())
 }
 
-fn apply_edit(document: &mut PdfDocument, edit: &TextEdit) -> PdfResult<()> {
-    // Acquire the standard font token FIRST. `fonts_mut()` takes a mutable
-    // borrow of the document; getting the token here lets that borrow end
-    // before we take the immutable `pages()` borrow below.
-    let font = document.fonts_mut().helvetica();
+/// Classified font family used to select a PDF standard-14 substitute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontClass {
+    Serif,
+    Sans,
+    Mono,
+}
+
+/// Classify a PDF font name into a family class (mirrors the frontend's
+/// matchFontStyle so the saved output agrees with the on-screen preview).
+fn classify_font_name(name: Option<&str>) -> FontClass {
+    let name = name.unwrap_or("").to_lowercase();
+    let is_mono = ["courier", "consol", "mono", "menlo", "typewriter"]
+        .iter()
+        .any(|m| name.contains(m));
+    if is_mono {
+        return FontClass::Mono;
+    }
+    let is_serif = [
+        "times",
+        "georgia",
+        "garamond",
+        "book",
+        "palatino",
+        "cambria",
+        "century",
+        "minion",
+        "caslon",
+        "baskerville",
+        "serif",
+    ]
+    .iter()
+    .any(|m| name.contains(m))
+        // "Century Gothic" and friends are sans faces despite the keyword hit.
+        && !name.contains("sans")
+        && !name.contains("gothic");
+    if is_serif {
+        FontClass::Serif
+    } else {
+        FontClass::Sans
+    }
+}
+
+/// Resolve the closest PDF standard-14 font for a name + style flags.
+fn match_standard_font(
+    fonts: &mut PdfFonts,
+    name: Option<&str>,
+    bold: bool,
+    italic: bool,
+) -> PdfFontToken {
+    match (classify_font_name(name), bold, italic) {
+        (FontClass::Serif, false, false) => fonts.times_roman(),
+        (FontClass::Serif, true, false) => fonts.times_bold(),
+        (FontClass::Serif, false, true) => fonts.times_italic(),
+        (FontClass::Serif, true, true) => fonts.times_bold_italic(),
+        (FontClass::Mono, false, false) => fonts.courier(),
+        (FontClass::Mono, true, false) => fonts.courier_bold(),
+        (FontClass::Mono, false, true) => fonts.courier_oblique(),
+        (FontClass::Mono, true, true) => fonts.courier_bold_oblique(),
+        (FontClass::Sans, false, false) => fonts.helvetica(),
+        (FontClass::Sans, true, false) => fonts.helvetica_bold(),
+        (FontClass::Sans, false, true) => fonts.helvetica_oblique(),
+        (FontClass::Sans, true, true) => fonts.helvetica_bold_oblique(),
+    }
+}
+
+/// Tier-2 fallback: white-out the original glyphs and stamp the replacement on
+/// the ORIGINAL BASELINE at the extracted size/color with a matched font.
+fn apply_edit_fallback(document: &mut PdfDocument, edit: &TextEdit) -> PdfResult<()> {
+    // Acquire the font token FIRST: `fonts_mut()` mutably borrows the document
+    // and must end before the `pages()` borrow below begins.
+    let font = match_standard_font(
+        document.fonts_mut(),
+        edit.font_name.as_deref(),
+        edit.bold,
+        edit.italic,
+    );
 
     let pages = document.pages();
     let mut page = pages
@@ -769,9 +1166,7 @@ fn apply_edit(document: &mut PdfDocument, edit: &TextEdit) -> PdfResult<()> {
     let cover = PdfPagePathObject::new_rect(document, cover_rect, None, None, Some(white))?;
     page.objects_mut().add_path_object(cover)?;
 
-    // 2. Stamp the replacement text at the original baseline & size, using a
-    // standard font (Helvetica). True embedded-font reuse is out of scope; this
-    // matches the practical fidelity ceiling for editing arbitrary PDFs.
+    // 2. Stamp the replacement text on the original baseline.
     if !edit.new_text.trim().is_empty() {
         let mut text_object = PdfPageTextObject::new(
             document,
@@ -781,13 +1176,120 @@ fn apply_edit(document: &mut PdfDocument, edit: &TextEdit) -> PdfResult<()> {
         )?;
         text_object.set_fill_color(parse_color(&edit.color, 255))?;
 
-        // Position at the lower-left of the original box (text baseline).
         let x = edit.original_bounds.x;
-        let baseline_y = page_height - (edit.original_bounds.y + edit.original_bounds.height);
+        // Prefer the extracted baseline; fall back to the box bottom for edits
+        // recorded before baseline capture existed.
+        let baseline_y = if edit.baseline.is_finite() && edit.baseline > 0.0 {
+            page_height - edit.baseline
+        } else {
+            page_height - (edit.original_bounds.y + edit.original_bounds.height)
+        };
         text_object.translate(PdfPoints::new(x), PdfPoints::new(baseline_y))?;
 
         page.objects_mut().add_text_object(text_object)?;
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn top_left_and_pdf_rect_conversions_round_trip() {
+        let page_height = 792.0;
+        let original = PdfRect::new_from_values(700.0, 72.0, 720.0, 300.0);
+        let top_left = to_top_left_rect(&original, page_height);
+        assert!((top_left.x - 72.0).abs() < 1e-4);
+        assert!((top_left.y - 72.0).abs() < 1e-4); // 792 - 720
+        assert!((top_left.width - 228.0).abs() < 1e-4);
+        assert!((top_left.height - 20.0).abs() < 1e-4);
+
+        let back = to_pdf_rect(&top_left, page_height);
+        assert!((back.left().value - original.left().value).abs() < 1e-4);
+        assert!((back.right().value - original.right().value).abs() < 1e-4);
+        assert!((back.top().value - original.top().value).abs() < 1e-4);
+        assert!((back.bottom().value - original.bottom().value).abs() < 1e-4);
+    }
+
+    #[test]
+    fn subset_font_names_are_detected() {
+        assert!(is_subset_font_name(Some("ABCDEF+TimesNewRomanPSMT")));
+        assert!(!is_subset_font_name(Some("TimesNewRomanPSMT")));
+        assert!(!is_subset_font_name(Some("abcdef+Times"))); // lowercase tag
+        assert!(!is_subset_font_name(Some("AB+Times"))); // wrong tag length
+        assert!(!is_subset_font_name(None));
+    }
+
+    #[test]
+    fn replacement_coverage_is_conservative() {
+        assert!(replacement_chars_covered("cat", "the cast"));
+        assert!(replacement_chars_covered("  cat  ", "the cast")); // ws ignored
+        assert!(!replacement_chars_covered("catz", "the cast"));
+        assert!(replacement_chars_covered("", "anything"));
+    }
+
+    #[test]
+    fn font_classification_matches_families() {
+        assert_eq!(
+            classify_font_name(Some("ABCDEF+TimesNewRomanPS-BoldMT")),
+            FontClass::Serif
+        );
+        assert_eq!(classify_font_name(Some("CourierNewPSMT")), FontClass::Mono);
+        assert_eq!(classify_font_name(Some("Arial-ItalicMT")), FontClass::Sans);
+        assert_eq!(classify_font_name(Some("PT Sans-Serif")), FontClass::Sans);
+        assert_eq!(classify_font_name(Some("CenturyGothic")), FontClass::Sans);
+        assert_eq!(
+            classify_font_name(Some("CenturySchoolbook")),
+            FontClass::Serif
+        );
+        assert_eq!(classify_font_name(None), FontClass::Sans);
+    }
+
+    #[test]
+    fn occurrence_replacement_picks_the_nearest_match() {
+        // Two occurrences of "100": bytes 7 and 15 in a 18-byte string.
+        let text = "Total: 100 and 100";
+        // An edit near the start should hit the first occurrence…
+        assert_eq!(
+            replace_occurrence_near(text, "100", "999", 0.3).as_deref(),
+            Some("Total: 999 and 100")
+        );
+        // …and one near the end should hit the second.
+        assert_eq!(
+            replace_occurrence_near(text, "100", "999", 0.9).as_deref(),
+            Some("Total: 100 and 999")
+        );
+        // Absent pattern → None; empty pattern → None.
+        assert_eq!(replace_occurrence_near(text, "200", "x", 0.5), None);
+        assert_eq!(replace_occurrence_near(text, "", "x", 0.5), None);
+        // Replacement longer/shorter than the pattern keeps surroundings.
+        assert_eq!(
+            replace_occurrence_near("abc", "b", "BBB", 0.0).as_deref(),
+            Some("aBBBc")
+        );
+    }
+
+    #[test]
+    fn bold_weights_classify_correctly() {
+        assert!(is_bold_weight(&PdfFontWeight::Weight700Bold));
+        assert!(is_bold_weight(&PdfFontWeight::Weight600));
+        assert!(is_bold_weight(&PdfFontWeight::Custom(650)));
+        assert!(!is_bold_weight(&PdfFontWeight::Weight400Normal));
+        assert!(!is_bold_weight(&PdfFontWeight::Custom(300)));
+    }
+
+    #[test]
+    fn overlap_fraction_measures_target_coverage() {
+        let outer = PdfRect::new_from_values(0.0, 0.0, 100.0, 200.0);
+        let inside = PdfRect::new_from_values(10.0, 10.0, 50.0, 100.0);
+        assert!((overlap_fraction(&outer, &inside) - 1.0).abs() < 1e-5);
+
+        let half = PdfRect::new_from_values(0.0, 150.0, 100.0, 250.0);
+        assert!((overlap_fraction(&outer, &half) - 0.5).abs() < 1e-5);
+
+        let outside = PdfRect::new_from_values(0.0, 300.0, 100.0, 400.0);
+        assert!(overlap_fraction(&outer, &outside) < 1e-5);
+    }
 }

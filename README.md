@@ -25,10 +25,14 @@ that feels trustworthy and works without jank.
 
 **PDF viewer & editor**
 - High-fidelity PDFium rendering (the engine inside Chrome), crisp on HiDPI
-- Accurate text selection with real glyph bounding boxes
-- In-place text editing with layout-preserving, what-you-see-is-what-you-save preview
+- Metric-calibrated text selection: glyph-accurate boxes with font-matched,
+  width-calibrated overlay runs (the PDF.js technique)
+- Two-tier in-place text editing: true text-object rewrites that keep the
+  original embedded font where safe, with a matched-font baseline-exact
+  re-stamp fallback — previewed in place before saving
 - Markup: highlight, underline, strikethrough, comments, redaction
-- Page-thumbnail sidebar, full-text search, smooth zoom / fit-width / fit-page
+- Page-thumbnail sidebar (HiDPI-sharp), full-text search with on-page hit
+  highlighting, cursor-anchored Ctrl+wheel zoom, fit-width / fit-page
 - Undo/redo, keyboard shortcuts, dark & light themes
 
 **Mortgage & affordability calculator**

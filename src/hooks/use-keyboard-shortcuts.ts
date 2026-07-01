@@ -58,6 +58,16 @@ export function useKeyboardShortcuts() {
             e.preventDefault();
             ui.toggleCalculator();
             return;
+          case "f": {
+            // Focus the document search field (standard reader behavior).
+            const search = document.getElementById("document-search-input");
+            if (search instanceof HTMLInputElement) {
+              e.preventDefault();
+              search.focus();
+              search.select();
+            }
+            return;
+          }
           case "z":
             if (!isTypingTarget(e.target)) {
               e.preventDefault();

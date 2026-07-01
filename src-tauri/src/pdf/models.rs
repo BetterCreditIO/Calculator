@@ -55,12 +55,18 @@ pub struct TextSpan {
     pub index: usize,
     pub text: String,
     pub bounds: Rect,
+    /// Real (matrix-scaled) font size in points, from FPDFText_GetFontSize.
     pub font_size: f32,
+    /// Raw PDF font name (subset prefixes like "ABCDEF+" preserved so the
+    /// save path can detect subsetted embeds; the frontend matches by
+    /// substring, so the prefix is harmless there).
     pub font_name: Option<String>,
     pub bold: bool,
     pub italic: bool,
     pub color: Option<String>,
     pub rotation: f32,
+    /// Baseline Y in top-left point space (from FPDFText_GetCharOrigin).
+    pub baseline: f32,
 }
 
 /// The selectable/editable text layer for one page.
@@ -121,5 +127,12 @@ pub struct TextEdit {
     pub new_text: String,
     pub font_size: f32,
     pub font_name: Option<String>,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
     pub color: String,
+    /// Baseline Y in top-left point space the replacement is stamped on.
+    #[serde(default)]
+    pub baseline: f32,
 }

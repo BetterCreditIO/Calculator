@@ -11,28 +11,40 @@ import { debounce } from "@/lib/utils";
 export function SearchBar() {
   const meta = useDocumentStore((s) => s.meta);
   const requestScrollToPage = useDocumentStore((s) => s.requestScrollToPage);
+  const setActiveSearchHit = useDocumentStore((s) => s.setActiveSearchHit);
 
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [index, setIndex] = useState(0);
   const [loading, setLoading] = useState(false);
 
+  // Monotonic request id: a slow in-flight search must never clobber the
+  // results of a newer query (or of a cleared box).
+  const requestSeq = useRef(0);
+
   const runSearch = useRef(
     debounce(async (id: string, q: string) => {
+      const seq = ++requestSeq.current;
       if (q.trim().length < 2) {
         setHits([]);
+        setActiveSearchHit(null);
         setLoading(false);
         return;
       }
       try {
         const results = await searchText(id, q);
+        if (seq !== requestSeq.current) return; // stale response — discard
         setHits(results);
         setIndex(0);
-        if (results[0]) requestScrollToPage(results[0].pageIndex);
+        const first = results[0] ?? null;
+        setActiveSearchHit(first);
+        if (first) requestScrollToPage(first.pageIndex);
       } catch {
+        if (seq !== requestSeq.current) return;
         setHits([]);
+        setActiveSearchHit(null);
       } finally {
-        setLoading(false);
+        if (seq === requestSeq.current) setLoading(false);
       }
     }, 300),
   );
@@ -62,13 +74,17 @@ export function SearchBar() {
     const next = (index + delta + hits.length) % hits.length;
     setIndex(next);
     const hit = hits[next];
-    if (hit) requestScrollToPage(hit.pageIndex);
+    if (hit) {
+      setActiveSearchHit(hit);
+      requestScrollToPage(hit.pageIndex);
+    }
   }
 
   return (
     <div className="flex h-8 items-center gap-1 rounded-md border border-input bg-background px-2 text-sm">
       <Search className="h-3.5 w-3.5 text-muted-foreground" />
       <input
+        id="document-search-input"
         value={query}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {

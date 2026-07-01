@@ -62,7 +62,9 @@ function Thumbnail({
   useEffect(() => {
     if (!meta || !inView) return;
     let cancelled = false;
-    renderPage(meta.id, size.pageIndex, thumbScale)
+    // Render at device-pixel density so thumbnails stay crisp on HiDPI.
+    const dpr = window.devicePixelRatio || 1;
+    renderPage(meta.id, size.pageIndex, thumbScale * dpr)
       .then((u) => {
         if (!cancelled) setUrl(u);
       })

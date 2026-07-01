@@ -9,7 +9,8 @@
  *   • consume programmatic scroll requests (thumbnail / page input / keyboard).
  */
 import { useEffect, useLayoutEffect, useRef } from "react";
-import { useDocumentStore } from "@/stores/document-store";
+import type { PageSize } from "@/types/pdf";
+import { useDocumentStore, MIN_SCALE, MAX_SCALE } from "@/stores/document-store";
 import { PdfPage } from "./PdfPage";
 
 const PAGE_GAP = 24; // px between pages
@@ -26,6 +27,21 @@ export function PdfViewer() {
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number | null>(null);
+  /**
+   * Pending zoom anchor: keeps the point under the cursor fixed on zoom.
+   * Offsets are pre-split into a FIXED part (padding + inter-page gaps, which
+   * do not scale with zoom) and a SCALABLE part (page pixels); only the
+   * scalable part is multiplied by the zoom ratio, so the anchor stays exact
+   * even deep into a long document.
+   */
+  const anchorRef = useRef<null | {
+    cursorX: number;
+    cursorY: number;
+    fixedY: number;
+    scalableY: number;
+    contentX: number;
+    ratio: number;
+  }>(null);
 
   const maxPageWidth = meta
     ? Math.max(...meta.pages.map((p) => p.width), 1)
@@ -95,6 +111,63 @@ export function PdfViewer() {
     };
   }, [meta, setCurrentPage]);
 
+  // Ctrl+wheel zoom, anchored to the cursor (the standard reader interaction).
+  // Attached natively with passive:false so preventDefault stops page scroll.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !meta) return;
+
+    function onWheel(e: WheelEvent) {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      const node = scrollRef.current;
+      if (!node) return;
+
+      const state = useDocumentStore.getState();
+      // Exponential factor gives smooth, device-independent zoom steps.
+      const factor = Math.exp(-e.deltaY * 0.0015);
+      const next = Math.min(
+        MAX_SCALE,
+        Math.max(MIN_SCALE, state.scale * factor),
+      );
+      if (next === state.scale) return;
+
+      const rect = node.getBoundingClientRect();
+      const cursorX = e.clientX - rect.left;
+      const cursorY = e.clientY - rect.top;
+      const contentY = node.scrollTop + cursorY;
+      const pages = state.meta?.pages ?? [];
+      const { fixed, scalable } = splitFixedY(contentY, pages, state.scale);
+      anchorRef.current = {
+        cursorX,
+        cursorY,
+        fixedY: fixed,
+        scalableY: scalable,
+        contentX: node.scrollLeft + cursorX,
+        ratio: next / state.scale,
+      };
+      state.setScale(next);
+    }
+
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [meta]);
+
+  // Apply the zoom anchor after the layout has re-scaled.
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current;
+    if (!anchor) return;
+    anchorRef.current = null;
+    const node = scrollRef.current;
+    if (!node) return;
+    // Horizontal: only the page pixels beyond the padding scale.
+    const scalableX = Math.max(0, anchor.contentX - VIEWPORT_PADDING);
+    const fixedX = anchor.contentX - scalableX;
+    node.scrollLeft = fixedX + scalableX * anchor.ratio - anchor.cursorX;
+    node.scrollTop =
+      anchor.fixedY + anchor.scalableY * anchor.ratio - anchor.cursorY;
+  }, [scale]);
+
   // Consume programmatic scroll requests.
   useEffect(() => {
     if (pendingScrollPage == null) return;
@@ -128,4 +201,40 @@ export function PdfViewer() {
       </div>
     </div>
   );
+}
+
+/**
+ * Split a vertical scroll offset into its FIXED component (top padding and the
+ * constant inter-page gaps) and its SCALABLE component (page pixels, which
+ * multiply with zoom). Walking the page list at the CURRENT scale exactly
+ * mirrors the flex column layout above.
+ */
+function splitFixedY(
+  contentY: number,
+  pages: PageSize[],
+  scale: number,
+): { fixed: number; scalable: number } {
+  let fixed = Math.min(contentY, VIEWPORT_PADDING);
+  let scalable = 0;
+  let cursor = VIEWPORT_PADDING;
+
+  for (let i = 0; i < pages.length; i++) {
+    if (contentY <= cursor) break;
+    const pageHeight = (pages[i]?.height ?? 0) * scale;
+
+    // Portion of this page above the anchor point.
+    const withinPage = Math.min(Math.max(contentY - cursor, 0), pageHeight);
+    scalable += withinPage;
+    cursor += pageHeight;
+    if (contentY <= cursor) return { fixed, scalable };
+
+    // Portion of the gap after this page above the anchor point.
+    const withinGap = Math.min(Math.max(contentY - cursor, 0), PAGE_GAP);
+    fixed += withinGap;
+    cursor += PAGE_GAP;
+  }
+
+  // Below the last page (bottom padding region): remaining offset is fixed.
+  if (contentY > cursor) fixed += contentY - cursor;
+  return { fixed, scalable };
 }

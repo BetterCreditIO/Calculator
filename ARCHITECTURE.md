@@ -106,11 +106,15 @@ Pages are shown as PDFium rasters. What the user sees is byte-for-byte what
 PDFium (Chrome's engine) produces — fonts, kerning, vector art, and images are
 all exact.
 
-### 5.2 Selectable/editable text overlay (geometry-accurate)
+### 5.2 Selectable/editable text overlay (geometry- and style-accurate)
 For each page we extract characters via PDFium's text API and group them into
-line-level **spans** with tight bounding boxes. Crucially, geometry is converted
-**once, at the Rust boundary**, from PDFium's native space (points, origin
-bottom-left, y-up) into a normalized **top-left, point-based** space:
+**style-aware, line-level spans**: a run splits whenever the font name, size,
+weight, italic flag, or fill color changes, so every span is a single styled,
+editable unit. Each span carries its real (matrix-scaled) font size, raw PDF
+font name, bold/italic flags, fill color, and the exact **baseline Y** (from
+`FPDFText_GetCharOrigin`). Geometry is converted **once, at the Rust
+boundary**, from PDFium's native space (points, origin bottom-left, y-up) into
+a normalized **top-left, point-based** space:
 
 ```
 x = left
@@ -119,32 +123,52 @@ w = right − left
 h = top − bottom
 ```
 
-The frontend then multiplies by the current `scale` to place transparent,
-selectable DOM elements exactly over the rendered glyphs. This single conversion
-point is what makes selection and editing align with the raster. (See
-`engine.rs::to_top_left_rect` and `types/pdf.ts`.)
+On the DOM side (see `lib/text-metrics.ts`), the overlay then applies the same
+technique PDF.js uses for its text layer:
+1. the PDF font name is classified into the closest local family class
+   (serif / sans / mono, with bold/italic), and
+2. the run is measured with the matched CSS font and stretched with
+   `transform: scaleX(target / natural)` so its total advance width equals the
+   painted run's width exactly.
+
+Selection highlights and caret positions then track the raster to within a
+fraction of a glyph across the whole run.
 
 ### 5.3 In-place editing
-With the Edit tool, double-clicking a span turns it into an inline editor. A
-committed change becomes a `TextEdit` (original geometry + new text + size +
-color) and is **previewed in place** — the original glyphs are whited-out and the
-new text is shown at the same box. *What you see is what gets saved.*
+With the Edit tool, double-clicking a span turns it into an inline editor
+rendered in the matched font, size, and color. A committed change becomes a
+`TextEdit` (original geometry + baseline + style + new text) and is **previewed
+in place** — the original glyphs are whited-out and the replacement is shown in
+matched typography. *What you see is what gets saved.*
 
-### 5.4 Persisting edits with fidelity (`save_document`)
-On save, the backend reconstructs the document:
-- **Edits:** draw an opaque white rectangle over the original glyph region, then
-  stamp the replacement string as a new text object at the original baseline and
-  size using a standard font (Helvetica).
-- **Markup:** highlight / underline / strikethrough / redaction are baked in as
-  filled rectangle path objects at the recorded geometry; comments are flattened
-  as visible notes.
+### 5.4 Persisting edits with fidelity (`save_document`) — two tiers
 
-**Honest fidelity ceiling.** Re-stamped text uses a standard font family rather
-than reusing the document's (possibly subsetted, non-embedded) original font.
-This is the same practical limit other editors hit when editing arbitrary PDFs:
-the *display* is always exact; *edited runs* are reproduced at matching position
-and size with a substituted font. Position, size, and layout of everything else
-are preserved untouched.
+**Tier 1 — true in-place edit (best case, Acrobat's mechanism).** The backend
+locates the page **text object** that draws the edited run (bounds overlap +
+text match) and rewrites its string via `FPDFText_SetText`. The object keeps
+its **original font, size, matrix, color, and render mode** — for same-font
+edits the output is indistinguishable from the source document. Guard rail:
+subsetted embedded fonts (`ABCDEF+…`) only carry glyphs the document already
+uses, so this tier is taken only when every replacement character already
+occurs in that object's text; page content is explicitly regenerated afterward
+(`set_text` alone does not mark the page dirty in pdfium-render 0.9).
+
+**Tier 2 — white-out + matched-font re-stamp (fallback).** When no safe object
+match exists, the original glyph region is covered and the replacement is
+stamped as a new text object **on the original baseline** at the extracted font
+size and fill color, using the closest PDF standard-14 font
+(Helvetica/Times/Courier × bold/italic) classified from the original font name
+— the same classification the on-screen preview uses, so preview and output
+agree.
+
+**Markup:** highlight / underline / strikethrough / redaction are baked in as
+filled rectangle path objects at the recorded geometry; comments are flattened
+as visible notes.
+
+**Honest fidelity ceiling.** Tier 1 preserves the original font outright. Tier
+2 substitutes the closest standard family at exact position/size/color — the
+same practical limit any editor hits when a subsetted embedded font lacks the
+glyphs an edit introduces (Acrobat warns and substitutes in this case too).
 
 ---
 
@@ -295,7 +319,8 @@ See `README.md` for the exact build commands.
 
 ## 15. Known limitations & future work
 
-- Edited text is re-stamped with a standard font (see §5.4).
+- Tier-2 edits substitute the closest standard-14 font when the original
+  (typically a subsetted embed) can't safely render the new characters (§5.4).
 - Markup is created from text selection (highlight/underline/strikethrough) and
   pointer drag (redaction); text-flow-aware redaction of reflowed runs is future
   work.
@@ -303,4 +328,6 @@ See `README.md` for the exact build commands.
   (rotation metadata is captured for a future overlay transform).
 - Comments are flattened on save; round-trippable PDF annotation objects are a
   natural enhancement.
+- In-place (Tier-1) edits keep the object's original layout matrix; a large
+  length change can alter line justification, as it does in other editors.
 ```
