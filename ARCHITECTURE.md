@@ -189,6 +189,7 @@ normalized to a single `BackendError` with the failing command's context.
 | `render_page` | `id, pageIndex, scale` | PNG bytes (ArrayBuffer) |
 | `get_page_text` | `id, pageIndex` | `PageTextLayer` |
 | `search_text` | `id, query` | `SearchHit[]` |
+| `transform_pages` | `id, op` (rotate / delete / move / insertBlank / appendPdf / extractPage) | `DocumentMeta` |
 | `write_text_file` | `path, contents` | `()` |
 | `save_document` | `id, outputPath, edits, annotations` | `()` |
 
@@ -319,17 +320,41 @@ See `README.md` for the exact build commands.
 
 ---
 
-## 15. Known limitations & future work
+## 15. Page organizer & rotation-correct geometry
+
+Structural page operations run in the engine against the cached document bytes
+(`transform_pages`): **rotate** (90° steps), **delete**, **move** (PDFium has
+no in-place reorder, so a copy of the page is imported from a twin document at
+the target slot and the original instance deleted — this mutates the ORIGINAL
+document, preserving the Info dictionary, bookmarks, and form fields),
+**insert blank** (sized like its neighbor), **append PDF**, and **extract
+page**. Mutations replace the in-memory byte cache and return fresh
+`DocumentMeta`; the file on disk changes only on the user's next Save.
+Annotations and pending edits are remapped on the frontend
+(`lib/page-remap.ts`) — indices shift for delete/move/insert, and markup rects
+rotate with their page.
+
+Rotation is now fully correct end-to-end via `PageGeometry` (engine.rs):
+PDFium reports page *width/height* post-rotation but char boxes/origins in
+UNROTATED page space, so every extraction site maps page→display and every
+save site maps display→page through one verified, unit-tested transform.
+Re-stamped text on rotated pages is pre-rotated with the matching text matrix
+so it displays upright.
+
+## 16. Known limitations & future work
 
 - Tier-2 edits substitute the closest standard-14 font when the original
   (typically a subsetted embed) can't safely render the new characters (§5.4).
 - Markup is created from text selection (highlight/underline/strikethrough) and
   pointer drag (redaction); text-flow-aware redaction of reflowed runs is future
   work.
-- Rotated pages render correctly; the text overlay assumes upright pages
-  (rotation metadata is captured for a future overlay transform).
+- Rotating a page with *pending text edits* is blocked (save or undo first);
+  a scalar baseline cannot survive a 90° turn.
 - Comments are flattened on save; round-trippable PDF annotation objects are a
   natural enhancement.
 - In-place (Tier-1) edits keep the object's original layout matrix; a large
   length change can alter line justification, as it does in other editors.
+- Page operations are immediate (confirmed for delete) and clear the
+  markup undo history; ops themselves are not undoable until Save-as keeps the
+  original file intact.
 ```

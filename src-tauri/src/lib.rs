@@ -42,6 +42,7 @@ pub fn run() {
             pdf::commands::render_page,
             pdf::commands::get_page_text,
             pdf::commands::search_text,
+            pdf::commands::transform_pages,
             pdf::commands::write_text_file,
             pdf::commands::save_document,
         ])

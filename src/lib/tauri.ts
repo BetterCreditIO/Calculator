@@ -132,6 +132,24 @@ export function searchText(id: string, query: string): Promise<SearchHit[]> {
 // Editing & export
 // ---------------------------------------------------------------------------
 
+/**
+ * A structural page operation. Mirrors the Rust `PageOp` enum (serde
+ * internally-tagged with camelCase variants). Ops mutate the engine's cached
+ * document in memory; the file on disk changes only on the next Save.
+ */
+export type PageOp =
+  | { type: "rotate"; pageIndex: number; clockwise: boolean }
+  | { type: "delete"; pageIndex: number }
+  | { type: "move"; from: number; to: number }
+  | { type: "insertBlank"; afterIndex: number }
+  | { type: "appendPdf"; path: string }
+  | { type: "extractPage"; pageIndex: number; outputPath: string };
+
+/** Apply a page operation; returns the document's refreshed metadata. */
+export function transformPages(id: string, op: PageOp): Promise<DocumentMeta> {
+  return invoke<DocumentMeta>("transform_pages", { id, op });
+}
+
 /** Write a UTF-8 text file to a user-chosen path (mortgage-estimate export). */
 export function writeTextFile(path: string, contents: string): Promise<void> {
   return invoke<void>("write_text_file", { path, contents });

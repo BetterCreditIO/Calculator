@@ -38,15 +38,20 @@ use pdfium_render::prelude::*;
 
 use crate::error::{PdfError, PdfResult};
 use crate::pdf::models::{
-    Annotation, AnnotationType, DocumentMeta, PageSize, PageTextLayer, Rect, SearchHit, TextEdit,
-    TextSpan,
+    Annotation, AnnotationType, DocumentMeta, PageOp, PageSize, PageTextLayer, Rect, SearchHit,
+    TextEdit, TextSpan,
 };
 
-/// A document held open by the engine. Only the raw bytes are retained; they
-/// are re-parsed per operation (cheap relative to rendering), which sidesteps
-/// the lifetime coupling between `PdfDocument` and `Pdfium`.
+/// A document held open by the engine. The raw bytes are the SOURCE OF TRUTH:
+/// structural page operations replace them in place (persisted to disk only on
+/// the user's next Save), and every render/text/search re-parses them — which
+/// sidesteps the lifetime coupling between `PdfDocument` and `Pdfium`.
 struct LoadedDoc {
     bytes: Vec<u8>,
+    /// Original file path/name, kept so metadata rebuilt after a page
+    /// operation carries the same identity.
+    path: Option<String>,
+    name: String,
 }
 
 /// Work items handled by the engine thread. Each carries a reply `Sender`.
@@ -84,6 +89,11 @@ enum EngineRequest {
         edits: Vec<TextEdit>,
         annotations: Vec<Annotation>,
         reply: Sender<PdfResult<()>>,
+    },
+    Transform {
+        id: String,
+        op: PageOp,
+        reply: Sender<PdfResult<DocumentMeta>>,
     },
 }
 
@@ -183,6 +193,10 @@ impl PdfEngine {
             reply,
         })
     }
+
+    pub fn transform(&self, id: String, op: PageOp) -> PdfResult<DocumentMeta> {
+        self.dispatch(|reply| EngineRequest::Transform { id, op, reply })
+    }
 }
 
 // ===========================================================================
@@ -217,7 +231,7 @@ fn run_worker(rx: Receiver<EngineRequest>, lib_dir: Option<PathBuf>) {
                 let result = guard(|| {
                     with_pdfium(&pdfium, |pdfium| {
                         let meta = build_meta(pdfium, &id, &bytes, path.clone(), &name)?;
-                        docs.insert(id.clone(), LoadedDoc { bytes });
+                        docs.insert(id.clone(), LoadedDoc { bytes, path, name });
                         Ok(meta)
                     })
                 });
@@ -274,6 +288,20 @@ fn run_worker(rx: Receiver<EngineRequest>, lib_dir: Option<PathBuf>) {
                     with_pdfium(&pdfium, |pdfium| {
                         let doc = docs.get(&id).ok_or(PdfError::DocumentNotFound)?;
                         save_document(pdfium, &doc.bytes, &output_path, &edits, &annotations)
+                    })
+                });
+                let _ = reply.send(result);
+            }
+            EngineRequest::Transform { id, op, reply } => {
+                let result = guard(|| {
+                    with_pdfium(&pdfium, |pdfium| {
+                        let doc = docs.get_mut(&id).ok_or(PdfError::DocumentNotFound)?;
+                        // Apply the op; a mutating op returns the replacement
+                        // bytes, which become the new source of truth.
+                        if let Some(new_bytes) = apply_page_op(pdfium, &doc.bytes, &op)? {
+                            doc.bytes = new_bytes;
+                        }
+                        build_meta(pdfium, &id, &doc.bytes, doc.path.clone(), &doc.name)
                     })
                 });
                 let _ = reply.send(result);
@@ -450,16 +478,16 @@ fn page_text_layer(pdfium: &Pdfium, bytes: &[u8], page_index: usize) -> PdfResul
         .get(page_index as i32)
         .map_err(|_| PdfError::PageOutOfRange(page_index))?;
 
-    let page_height = page.height().value;
     let size = PageSize {
         page_index,
         width: page.width().value,
-        height: page_height,
+        height: page.height().value,
         rotation: rotation_degrees(&page),
     };
+    let geometry = PageGeometry::from_page(&page);
 
     let text = page.text()?;
-    let spans = build_spans(&text, page_height);
+    let spans = build_spans(&text, &geometry);
 
     Ok(PageTextLayer {
         page_index,
@@ -468,14 +496,104 @@ fn page_text_layer(pdfium: &Pdfium, bytes: &[u8], page_index: usize) -> PdfResul
     })
 }
 
-/// Convert a Pdfium rect (bottom-left origin, points) into our normalized
-/// top-left, point-based rect.
+/// Per-page coordinate mapper between PDFium's UNROTATED page space (points,
+/// origin bottom-left) and the normalized DISPLAY space the frontend uses
+/// (points, origin top-left, matching the rendered raster).
 ///
-/// NOTE: this y-flip is exact for pages with intrinsic rotation 0 (the common
-/// case). Rotated pages (`PageSize.rotation` ∈ {90,180,270}) render correctly
-/// but their text overlay is not yet rotation-corrected — see ARCHITECTURE.md
-/// §15 "Known limitations". `rotation` is captured per page so a future overlay
-/// transform can consume it without a wire-format change.
+/// PDFium's `/Rotate`-aware split is subtle and verified against its source:
+/// `FPDF_GetPageWidth/Height` return ROTATED (display) dimensions, while text
+/// char boxes and origins (`FPDFText_GetCharBox` / `GetCharOrigin`) are in
+/// UNROTATED page space. This struct owns the round-trip so every extraction
+/// site maps page→display and every save site maps display→page, making the
+/// text overlay and all edits correct on rotated pages.
+#[derive(Debug, Clone, Copy)]
+struct PageGeometry {
+    /// Intrinsic clockwise display rotation: 0, 90, 180 or 270.
+    rotation: i32,
+    /// UNROTATED page dimensions in points.
+    page_w: f32,
+    page_h: f32,
+}
+
+impl PageGeometry {
+    fn from_page(page: &PdfPage) -> Self {
+        let rotation = rotation_degrees(page);
+        let display_w = page.width().value;
+        let display_h = page.height().value;
+        // width()/height() are post-rotation; un-swap for 90/270.
+        let (page_w, page_h) = if rotation == 90 || rotation == 270 {
+            (display_h, display_w)
+        } else {
+            (display_w, display_h)
+        };
+        Self {
+            rotation,
+            page_w,
+            page_h,
+        }
+    }
+
+    /// Page-space point (bottom-left origin) → display point (top-left).
+    fn page_to_display(&self, x: f32, y: f32) -> (f32, f32) {
+        match self.rotation {
+            90 => (y, x),
+            180 => (self.page_w - x, y),
+            270 => (self.page_h - y, self.page_w - x),
+            _ => (x, self.page_h - y),
+        }
+    }
+
+    /// Display point (top-left origin) → page-space point (bottom-left).
+    fn display_to_page(&self, xd: f32, yd: f32) -> (f32, f32) {
+        match self.rotation {
+            90 => (yd, xd),
+            180 => (self.page_w - xd, yd),
+            270 => (self.page_w - yd, self.page_h - xd),
+            _ => (xd, self.page_h - yd),
+        }
+    }
+
+    /// Pdfium rect (page space) → display rect.
+    fn rect_to_display(&self, r: &PdfRect) -> Rect {
+        let (x0, y0) = self.page_to_display(r.left().value, r.bottom().value);
+        let (x1, y1) = self.page_to_display(r.right().value, r.top().value);
+        Rect {
+            x: x0.min(x1),
+            y: y0.min(y1),
+            width: (x1 - x0).abs(),
+            height: (y1 - y0).abs(),
+        }
+    }
+
+    /// Display rect → Pdfium rect (page space).
+    fn rect_to_page(&self, r: &Rect) -> PdfRect {
+        let (x0, y0) = self.display_to_page(r.x, r.y);
+        let (x1, y1) = self.display_to_page(r.x + r.width, r.y + r.height);
+        PdfRect::new(
+            PdfPoints::new(y0.min(y1)),
+            PdfPoints::new(x0.min(x1)),
+            PdfPoints::new(y0.max(y1)),
+            PdfPoints::new(x0.max(x1)),
+        )
+    }
+
+    /// The 2×2 rotation matrix (a, b, c, d) that pre-rotates page-space
+    /// content counter-clockwise by `rotation`, so it displays upright after
+    /// the page's clockwise display rotation. Used when stamping replacement
+    /// text onto rotated pages.
+    fn upright_text_matrix(&self) -> (f32, f32, f32, f32) {
+        match self.rotation {
+            90 => (0.0, 1.0, -1.0, 0.0),
+            180 => (-1.0, 0.0, 0.0, -1.0),
+            270 => (0.0, -1.0, 1.0, 0.0),
+            _ => (1.0, 0.0, 0.0, 1.0),
+        }
+    }
+}
+
+/// Convert a Pdfium rect (bottom-left origin, points) into our normalized
+/// top-left, point-based rect. Rotation-0 fast path; rotated pages go through
+/// [`PageGeometry::rect_to_display`].
 fn to_top_left_rect(r: &PdfRect, page_height: f32) -> Rect {
     // PdfRect exposes its edges via accessor methods returning PdfPoints.
     let left = r.left().value;
@@ -663,8 +781,10 @@ impl SpanBuilder {
     }
 }
 
-/// Group a page's characters into style-aware, line-level spans.
-fn build_spans(text: &PdfPageText, page_height: f32) -> Vec<TextSpan> {
+/// Group a page's characters into style-aware, line-level spans. All geometry
+/// is emitted in DISPLAY space via [`PageGeometry`], so spans are correct on
+/// rotated pages too.
+fn build_spans(text: &PdfPageText, geometry: &PageGeometry) -> Vec<TextSpan> {
     let mut spans: Vec<TextSpan> = Vec::new();
     let mut current: Option<SpanBuilder> = None;
 
@@ -682,14 +802,15 @@ fn build_spans(text: &PdfPageText, page_height: f32) -> Vec<TextSpan> {
         let Ok(bounds) = ch.loose_bounds() else {
             continue;
         };
-        let rect = to_top_left_rect(&bounds, page_height);
+        let rect = geometry.rect_to_display(&bounds);
         let style = read_char_style(&ch);
-        // Baseline from the char origin; fall back to ~80% of the glyph box
-        // (a typical ascent fraction) when Pdfium can't report one.
+        // Baseline from the char origin mapped into display space; fall back
+        // to ~80% of the glyph box (a typical ascent fraction) when Pdfium
+        // can't report one.
         let baseline = ch
             .origin()
             .ok()
-            .map(|(_, y)| page_height - y.value)
+            .map(|(x, y)| geometry.page_to_display(x.value, y.value).1)
             .unwrap_or(rect.y + rect.height * 0.8);
 
         match current.as_mut() {
@@ -725,9 +846,9 @@ fn search_document(pdfium: &Pdfium, bytes: &[u8], query: &str) -> PdfResult<Vec<
     let mut hits = Vec::new();
 
     for (page_index, page) in document.pages().iter().enumerate() {
-        let page_height = page.height().value;
+        let geometry = PageGeometry::from_page(&page);
         let Ok(text) = page.text() else { continue };
-        let spans = build_spans(&text, page_height);
+        let spans = build_spans(&text, &geometry);
 
         // Join span texts with single spaces; track each span's char offset so
         // a match can be mapped back to the span it starts in.
@@ -821,6 +942,147 @@ fn save_document(
     Ok(())
 }
 
+// ===========================================================================
+// Structural page operations
+// ===========================================================================
+
+/// Apply a structural page operation to the document bytes. Returns the
+/// replacement bytes for mutating ops, or `None` for ops that leave the
+/// document unchanged (extract, no-op move).
+fn apply_page_op(pdfium: &Pdfium, bytes: &[u8], op: &PageOp) -> PdfResult<Option<Vec<u8>>> {
+    match op {
+        PageOp::Rotate {
+            page_index,
+            clockwise,
+        } => {
+            let document = pdfium.load_pdf_from_byte_slice(bytes, None)?;
+            {
+                let pages = document.pages();
+                let mut page = pages
+                    .get(*page_index as i32)
+                    .map_err(|_| PdfError::PageOutOfRange(*page_index))?;
+                let current = rotation_degrees(&page);
+                let next = if *clockwise {
+                    current + 90
+                } else {
+                    current + 270
+                };
+                // set_rotation is a page-dictionary change; it persists on
+                // save without content regeneration.
+                page.set_rotation(rotation_from_degrees(next));
+            }
+            Ok(Some(document.save_to_bytes()?))
+        }
+
+        PageOp::Delete { page_index } => {
+            let document = pdfium.load_pdf_from_byte_slice(bytes, None)?;
+            if document.pages().len() <= 1 {
+                return Err(PdfError::InvalidOperation(
+                    "A document must keep at least one page.".into(),
+                ));
+            }
+            let pages = document.pages();
+            pages
+                .get(*page_index as i32)
+                .map_err(|_| PdfError::PageOutOfRange(*page_index))?
+                .delete()?;
+            Ok(Some(document.save_to_bytes()?))
+        }
+
+        PageOp::Move { from, to } => {
+            let mut document = pdfium.load_pdf_from_byte_slice(bytes, None)?;
+            let len = document.pages().len() as usize;
+            if *from >= len {
+                return Err(PdfError::PageOutOfRange(*from));
+            }
+            if *to >= len {
+                return Err(PdfError::PageOutOfRange(*to));
+            }
+            if from == to {
+                return Ok(None);
+            }
+            // Pdfium has no in-document reorder, and rebuilding into a fresh
+            // document via FPDF_ImportPages would silently drop document-level
+            // objects (Info dictionary, bookmarks/outline, AcroForm fields).
+            // Instead, mutate the ORIGINAL document: import a copy of the
+            // moved page from an identical twin document at the target slot,
+            // then delete the original instance.
+            let twin = pdfium.load_pdf_from_byte_slice(bytes, None)?;
+            let (insert_at, delete_at) = if to < from {
+                (*to, *from + 1) // insertion above shifts the original down
+            } else {
+                (*to + 1, *from)
+            };
+            document
+                .pages_mut()
+                .copy_page_from_document(&twin, *from as i32, insert_at as i32)?;
+            {
+                let pages = document.pages();
+                pages
+                    .get(delete_at as i32)
+                    .map_err(|_| PdfError::PageOutOfRange(delete_at))?
+                    .delete()?;
+            }
+            Ok(Some(document.save_to_bytes()?))
+        }
+
+        PageOp::InsertBlank { after_index } => {
+            let mut document = pdfium.load_pdf_from_byte_slice(bytes, None)?;
+            let len = document.pages().len() as usize;
+            if *after_index >= len {
+                return Err(PdfError::PageOutOfRange(*after_index));
+            }
+            // Size the blank page like its reference neighbor (display dims —
+            // the new page has rotation 0, so page dims == display dims).
+            let (width, height) = {
+                let pages = document.pages();
+                let page = pages
+                    .get(*after_index as i32)
+                    .map_err(|_| PdfError::PageOutOfRange(*after_index))?;
+                (page.width(), page.height())
+            };
+            document.pages_mut().create_page_at_index(
+                PdfPagePaperSize::Custom(width, height),
+                (*after_index + 1) as i32,
+            )?;
+            Ok(Some(document.save_to_bytes()?))
+        }
+
+        PageOp::AppendPdf { path } => {
+            let other_bytes = std::fs::read(path).map_err(PdfError::from)?;
+            let mut document = pdfium.load_pdf_from_byte_slice(bytes, None)?;
+            let other = pdfium.load_pdf_from_byte_slice(&other_bytes, None)?;
+            document.pages_mut().append(&other)?;
+            Ok(Some(document.save_to_bytes()?))
+        }
+
+        PageOp::ExtractPage {
+            page_index,
+            output_path,
+        } => {
+            let source = pdfium.load_pdf_from_byte_slice(bytes, None)?;
+            let len = source.pages().len() as usize;
+            if *page_index >= len {
+                return Err(PdfError::PageOutOfRange(*page_index));
+            }
+            let mut out = pdfium.create_new_pdf()?;
+            out.pages_mut()
+                .copy_page_from_document(&source, *page_index as i32, 0)?;
+            out.save_to_file(output_path)?;
+            Ok(None)
+        }
+    }
+}
+
+fn rotation_from_degrees(degrees: i32) -> PdfPageRenderRotation {
+    match degrees.rem_euclid(360) {
+        90 => PdfPageRenderRotation::Degrees90,
+        180 => PdfPageRenderRotation::Degrees180,
+        270 => PdfPageRenderRotation::Degrees270,
+        _ => PdfPageRenderRotation::None,
+    }
+}
+
 /// Apply all edits for one page: try the in-place tier first, then fall back
 /// to white-out + re-stamp for whatever couldn't be edited in place.
 fn apply_page_edits(
@@ -876,8 +1138,8 @@ fn try_set_text_in_place(page: &mut PdfPage, edit: &TextEdit) -> PdfResult<bool>
     if original.is_empty() {
         return Ok(false);
     }
-    let page_height = page.height().value;
-    let target = to_pdf_rect(&edit.original_bounds, page_height);
+    let geometry = PageGeometry::from_page(page);
+    let target = geometry.rect_to_page(&edit.original_bounds);
     // Unknown font names are treated as subsetted: we cannot prove the font
     // carries glyphs for new characters, so require coverage conservatively.
     let subsetted = edit.font_name.is_none() || is_subset_font_name(edit.font_name.as_deref());
@@ -896,12 +1158,23 @@ fn try_set_text_in_place(page: &mut PdfPage, edit: &TextEdit) -> PdfResult<bool>
         }
         // …and the object must be line-shaped relative to the run. A page-
         // covering object (watermark, rotated header) whose text happens to
-        // contain the edited string must not win the match; height is the
-        // discriminator because text objects are line-ish while page-scale
-        // objects (and rotated ones, via their axis-aligned bounds) are tall.
-        let obj_height = obj_rect.top().value - obj_rect.bottom().value;
-        let target_height = (target.top().value - target.bottom().value).max(1.0);
-        if obj_height > target_height * 4.0 {
+        // contain the edited string must not win the match. The line's
+        // THICKNESS axis depends on the page rotation: display-horizontal
+        // text runs along ±y in page space on 90/270 pages, so thickness is
+        // page-space WIDTH there and HEIGHT otherwise.
+        let vertical_advance = geometry.rotation == 90 || geometry.rotation == 270;
+        let (obj_thickness, target_thickness) = if vertical_advance {
+            (
+                obj_rect.right().value - obj_rect.left().value,
+                target.right().value - target.left().value,
+            )
+        } else {
+            (
+                obj_rect.top().value - obj_rect.bottom().value,
+                target.top().value - target.bottom().value,
+            )
+        };
+        if obj_thickness > target_thickness.max(1.0) * 4.0 {
             continue;
         }
 
@@ -914,11 +1187,9 @@ fn try_set_text_in_place(page: &mut PdfPage, edit: &TextEdit) -> PdfResult<bool>
             edit.new_text.clone()
         } else if existing.contains(original) {
             // The run may occur several times in this object ("100 … 100").
-            // Pick the occurrence whose position matches the edit's horizontal
-            // offset within the object's box.
-            let obj_width = (obj_rect.right().value - obj_rect.left().value).max(1.0);
-            let fraction =
-                ((target.left().value - obj_rect.left().value) / obj_width).clamp(0.0, 1.0);
+            // Pick the occurrence whose position matches the edit's offset
+            // along the TEXT ADVANCE axis, which rotates with the page.
+            let fraction = advance_fraction(geometry.rotation, &obj_rect, &target);
             match replace_occurrence_near(&existing, original, &edit.new_text, fraction) {
                 Some(updated) => updated,
                 None => continue,
@@ -979,6 +1250,21 @@ fn replace_occurrence_near(
         out.push_str(&text[index + pattern.len()..]);
         out
     })
+}
+
+/// Fraction (0..1) of the target run's start along the TEXT ADVANCE axis of a
+/// text object, in rotated page space. Display-horizontal text advances along
+/// page +x on unrotated pages, +y on /Rotate 90, −x on 180, and −y on 270.
+fn advance_fraction(rotation: i32, obj: &PdfRect, target: &PdfRect) -> f32 {
+    let width = (obj.right().value - obj.left().value).max(1.0);
+    let height = (obj.top().value - obj.bottom().value).max(1.0);
+    let fraction = match rotation {
+        90 => (target.bottom().value - obj.bottom().value) / height,
+        180 => (obj.right().value - target.right().value) / width,
+        270 => (obj.top().value - target.top().value) / height,
+        _ => (target.left().value - obj.left().value) / width,
+    };
+    fraction.clamp(0.0, 1.0)
 }
 
 /// True when a PDF font name carries the "ABCDEF+" subset-embedding prefix.
@@ -1049,7 +1335,7 @@ fn apply_annotation(document: &PdfDocument, annotation: &Annotation) -> PdfResul
     let mut page = pages
         .get(annotation.page_index as i32)
         .map_err(|_| PdfError::PageOutOfRange(annotation.page_index))?;
-    let page_height = page.height().value;
+    let geometry = PageGeometry::from_page(&page);
 
     let alpha = (annotation.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
 
@@ -1078,7 +1364,7 @@ fn apply_annotation(document: &PdfDocument, annotation: &Annotation) -> PdfResul
             _ => parse_color(&annotation.color, alpha),
         };
 
-        let pdf_rect = to_pdf_rect(&draw_rect, page_height);
+        let pdf_rect = geometry.rect_to_page(&draw_rect);
         let object = PdfPagePathObject::new_rect(document, pdf_rect, None, None, Some(fill))?;
         page.objects_mut().add_path_object(object)?;
     }
@@ -1168,10 +1454,10 @@ fn apply_edit_fallback(document: &mut PdfDocument, edit: &TextEdit) -> PdfResult
     let mut page = pages
         .get(edit.page_index as i32)
         .map_err(|_| PdfError::PageOutOfRange(edit.page_index))?;
-    let page_height = page.height().value;
+    let geometry = PageGeometry::from_page(&page);
 
     // 1. White-out the original text region.
-    let cover_rect = to_pdf_rect(&edit.original_bounds, page_height);
+    let cover_rect = geometry.rect_to_page(&edit.original_bounds);
     let white = PdfColor::new(255, 255, 255, 255);
     let cover = PdfPagePathObject::new_rect(document, cover_rect, None, None, Some(white))?;
     page.objects_mut().add_path_object(cover)?;
@@ -1186,15 +1472,19 @@ fn apply_edit_fallback(document: &mut PdfDocument, edit: &TextEdit) -> PdfResult
         )?;
         text_object.set_fill_color(parse_color(&edit.color, 255))?;
 
-        let x = edit.original_bounds.x;
-        // Prefer the extracted baseline; fall back to the box bottom for edits
-        // recorded before baseline capture existed.
-        let baseline_y = if edit.baseline.is_finite() && edit.baseline > 0.0 {
-            page_height - edit.baseline
+        // Baseline START in display space; prefer the extracted baseline and
+        // fall back to the box bottom for edits recorded without one.
+        let baseline_display_y = if edit.baseline.is_finite() && edit.baseline > 0.0 {
+            edit.baseline
         } else {
-            page_height - (edit.original_bounds.y + edit.original_bounds.height)
+            edit.original_bounds.y + edit.original_bounds.height
         };
-        text_object.translate(PdfPoints::new(x), PdfPoints::new(baseline_y))?;
+        let (px, py) = geometry.display_to_page(edit.original_bounds.x, baseline_display_y);
+
+        // Pre-rotate the glyphs counter-clockwise by the page rotation so they
+        // display upright, then place them on the mapped baseline point.
+        let (a, b, c, d) = geometry.upright_text_matrix();
+        text_object.transform(a, b, c, d, px, py)?;
 
         page.objects_mut().add_text_object(text_object)?;
     }
@@ -1288,6 +1578,167 @@ mod tests {
         assert!(is_bold_weight(&PdfFontWeight::Custom(650)));
         assert!(!is_bold_weight(&PdfFontWeight::Weight400Normal));
         assert!(!is_bold_weight(&PdfFontWeight::Custom(300)));
+    }
+
+    #[test]
+    fn page_geometry_points_round_trip_for_all_rotations() {
+        for &rotation in &[0, 90, 180, 270] {
+            let g = PageGeometry {
+                rotation,
+                page_w: 612.0,
+                page_h: 792.0,
+            };
+            let (display_w, display_h) = if rotation == 90 || rotation == 270 {
+                (792.0, 612.0)
+            } else {
+                (612.0, 792.0)
+            };
+            for &(x, y) in &[
+                (0.0_f32, 0.0_f32),
+                (612.0, 792.0),
+                (100.0, 200.0),
+                (50.5, 700.25),
+            ] {
+                let (xd, yd) = g.page_to_display(x, y);
+                // Display points stay within the rotated display box.
+                assert!(
+                    xd >= -1e-3 && xd <= display_w + 1e-3,
+                    "rot {rotation}: xd {xd} outside 0..{display_w}"
+                );
+                assert!(
+                    yd >= -1e-3 && yd <= display_h + 1e-3,
+                    "rot {rotation}: yd {yd} outside 0..{display_h}"
+                );
+                // And the mapping inverts exactly.
+                let (x2, y2) = g.display_to_page(xd, yd);
+                assert!(
+                    (x - x2).abs() < 1e-3 && (y - y2).abs() < 1e-3,
+                    "rot {rotation}: ({x},{y}) -> ({xd},{yd}) -> ({x2},{y2})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn page_geometry_orients_known_corners() {
+        // A 612x792 portrait page rotated 90° clockwise displays 792x612.
+        let g = PageGeometry {
+            rotation: 90,
+            page_w: 612.0,
+            page_h: 792.0,
+        };
+        // Page bottom-left lands at display top-left.
+        assert_eq!(g.page_to_display(0.0, 0.0), (0.0, 0.0));
+        // Page top-left lands at display top-right.
+        assert_eq!(g.page_to_display(0.0, 792.0), (792.0, 0.0));
+        // Page bottom-right lands at display bottom-left.
+        assert_eq!(g.page_to_display(612.0, 0.0), (0.0, 612.0));
+    }
+
+    #[test]
+    fn page_geometry_rects_round_trip_for_all_rotations() {
+        for &rotation in &[0, 90, 180, 270] {
+            let g = PageGeometry {
+                rotation,
+                page_w: 612.0,
+                page_h: 792.0,
+            };
+            let original = PdfRect::new_from_values(100.0, 72.0, 120.0, 300.0);
+            let display = g.rect_to_display(&original);
+            assert!(display.width > 0.0 && display.height > 0.0);
+            let back = g.rect_to_page(&display);
+            for (a, b) in [
+                (back.left().value, original.left().value),
+                (back.right().value, original.right().value),
+                (back.top().value, original.top().value),
+                (back.bottom().value, original.bottom().value),
+            ] {
+                assert!((a - b).abs() < 1e-3, "rot {rotation}: {a} != {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn move_insert_delete_indices_produce_the_right_permutation() {
+        // Simulate insert-copy-then-delete on a Vec to prove the index math
+        // matches the intended remove(from)+insert(to) permutation.
+        fn simulate(len: usize, from: usize, to: usize) -> Vec<usize> {
+            let (insert_at, delete_at) = if to < from {
+                (to, from + 1)
+            } else {
+                (to + 1, from)
+            };
+            let mut pages: Vec<usize> = (0..len).collect();
+            pages.insert(insert_at, pages[from]);
+            pages.remove(delete_at);
+            pages
+        }
+        fn expected(len: usize, from: usize, to: usize) -> Vec<usize> {
+            let mut pages: Vec<usize> = (0..len).collect();
+            let page = pages.remove(from);
+            pages.insert(to, page);
+            pages
+        }
+        for len in 1..=6 {
+            for from in 0..len {
+                for to in 0..len {
+                    if from == to {
+                        continue;
+                    }
+                    assert_eq!(
+                        simulate(len, from, to),
+                        expected(len, from, to),
+                        "len {len} from {from} to {to}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn advance_fraction_follows_the_rotated_text_axis() {
+        // Object occupying x 0..100, y 0..20 (page space) for rot 0/180, and
+        // x 0..20, y 0..100 for rot 90/270 (display-horizontal text becomes a
+        // vertical strip in page space).
+        let obj_h = PdfRect::new_from_values(0.0, 0.0, 20.0, 100.0);
+        let obj_v = PdfRect::new_from_values(0.0, 0.0, 100.0, 20.0);
+
+        // rot 0: a run starting at x=75 sits at fraction 0.75.
+        let t0 = PdfRect::new_from_values(0.0, 75.0, 20.0, 95.0);
+        assert!((advance_fraction(0, &obj_h, &t0) - 0.75).abs() < 1e-4);
+
+        // rot 180: advance is −x, so a run whose RIGHT edge is at x=25 is 75%
+        // of the way along the reading order.
+        let t180 = PdfRect::new_from_values(0.0, 5.0, 20.0, 25.0);
+        assert!((advance_fraction(180, &obj_h, &t180) - 0.75).abs() < 1e-4);
+
+        // rot 90: advance is +y; run starting at y=75 → 0.75.
+        let t90 = PdfRect::new_from_values(75.0, 0.0, 95.0, 20.0);
+        assert!((advance_fraction(90, &obj_v, &t90) - 0.75).abs() < 1e-4);
+
+        // rot 270: advance is −y; run whose TOP is at y=25 → 0.75.
+        let t270 = PdfRect::new_from_values(5.0, 0.0, 25.0, 20.0);
+        assert!((advance_fraction(270, &obj_v, &t270) - 0.75).abs() < 1e-4);
+    }
+
+    #[test]
+    fn rotation_degree_helpers_cycle() {
+        assert!(matches!(
+            rotation_from_degrees(90),
+            PdfPageRenderRotation::Degrees90
+        ));
+        assert!(matches!(
+            rotation_from_degrees(360),
+            PdfPageRenderRotation::None
+        ));
+        assert!(matches!(
+            rotation_from_degrees(270 + 90),
+            PdfPageRenderRotation::None
+        ));
+        assert!(matches!(
+            rotation_from_degrees(0 + 270),
+            PdfPageRenderRotation::Degrees270
+        ));
     }
 
     #[test]

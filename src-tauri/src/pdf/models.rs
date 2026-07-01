@@ -115,6 +115,37 @@ pub struct Annotation {
     pub note: Option<String>,
 }
 
+/// A structural page operation applied to the engine's cached document.
+///
+/// Ops mutate the in-memory document bytes (persisted to disk only on the
+/// user's next Save); each op returns the refreshed [`DocumentMeta`] so the
+/// frontend can re-layout immediately.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum PageOp {
+    /// Rotate one page by 90° in the given direction.
+    #[serde(rename_all = "camelCase")]
+    Rotate { page_index: usize, clockwise: bool },
+    /// Delete one page (guarded: a document must keep at least one page).
+    #[serde(rename_all = "camelCase")]
+    Delete { page_index: usize },
+    /// Move a page so it ends up at index `to`.
+    #[serde(rename_all = "camelCase")]
+    Move { from: usize, to: usize },
+    /// Insert a blank page (sized like the reference page) after `after_index`.
+    #[serde(rename_all = "camelCase")]
+    InsertBlank { after_index: usize },
+    /// Append every page of another PDF file to the end of this document.
+    #[serde(rename_all = "camelCase")]
+    AppendPdf { path: String },
+    /// Write a single page out as a new one-page PDF (does not mutate).
+    #[serde(rename_all = "camelCase")]
+    ExtractPage {
+        page_index: usize,
+        output_path: String,
+    },
+}
+
 /// A pending in-place text edit to apply on save.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::error::{PdfError, PdfResult};
 use crate::pdf::engine::PdfEngine;
-use crate::pdf::models::{Annotation, DocumentMeta, PageTextLayer, SearchHit, TextEdit};
+use crate::pdf::models::{Annotation, DocumentMeta, PageOp, PageTextLayer, SearchHit, TextEdit};
 
 /// Derive a friendly display name from a file path.
 fn file_stem_name(path: &str) -> String {
@@ -86,6 +86,19 @@ pub fn search_text(
     query: String,
 ) -> PdfResult<Vec<SearchHit>> {
     engine.search(id, query)
+}
+
+/// Apply a structural page operation (rotate / delete / move / insert blank /
+/// append PDF / extract page) to the engine's cached document and return the
+/// refreshed metadata. Mutations live in memory until the user saves.
+#[tauri::command]
+pub fn transform_pages(
+    engine: State<'_, PdfEngine>,
+    id: String,
+    op: PageOp,
+) -> PdfResult<DocumentMeta> {
+    log::info!("Applying page op {:?}", op);
+    engine.transform(id, op)
 }
 
 /// Write a UTF-8 text file (used by the mortgage-estimate export). The path is

@@ -33,6 +33,9 @@ that feels trustworthy and works without jank.
   original embedded font where safe, with a matched-font baseline-exact
   re-stamp fallback — previewed in place before saving
 - Markup: highlight, underline, strikethrough, comments, redaction
+- Page organizer: rotate, reorder, delete, insert blank, extract a page, and
+  merge (append) PDFs — right from the thumbnail sidebar, with rotation-correct
+  text selection on rotated pages
 - Page-thumbnail sidebar (HiDPI-sharp), full-text search with on-page hit
   highlighting, cursor-anchored Ctrl+wheel zoom, fit-width / fit-page
 - Undo/redo, keyboard shortcuts, dark & light themes

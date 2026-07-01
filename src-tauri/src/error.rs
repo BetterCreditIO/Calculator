@@ -27,6 +27,10 @@ pub enum PdfError {
     #[error("Page {0} does not exist in this document.")]
     PageOutOfRange(usize),
 
+    /// A structurally invalid page operation (e.g. deleting the only page).
+    #[error("{0}")]
+    InvalidOperation(String),
+
     /// Wrapper around any error raised by pdfium-render.
     #[error("PDF processing failed: {0}")]
     Pdfium(String),

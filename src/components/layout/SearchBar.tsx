@@ -54,12 +54,14 @@ export function SearchBar() {
     return () => fn.cancel();
   }, []);
 
-  // Reset when the document changes.
+  // Reset when the document changes — including structural page operations
+  // (rotate/delete/move/insert/append), which refresh `meta` under the SAME
+  // id but invalidate every hit's pageIndex/spanIndex.
   useEffect(() => {
     setQuery("");
     setHits([]);
     setIndex(0);
-  }, [meta?.id]);
+  }, [meta]);
 
   if (!meta) return null;
 

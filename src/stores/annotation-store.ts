@@ -9,6 +9,11 @@
  */
 import { create } from "zustand";
 import type { Annotation, TextEdit } from "@/types/pdf";
+import {
+  remapAnnotations,
+  remapEdits,
+  type PageRemap,
+} from "@/features/pdf/lib/page-remap";
 
 interface Snapshot {
   annotations: Annotation[];
@@ -33,6 +38,15 @@ interface AnnotationState extends Snapshot {
   redo: () => void;
   reset: () => void;
   markSaved: () => void;
+  /** Mark unsaved state without touching content (structural page changes). */
+  markDirty: () => void;
+
+  /**
+   * Realign annotations/edits after a structural page change (rotate, delete,
+   * move, insert). Undo history is cleared — snapshots taken against the old
+   * page structure would restore items onto the wrong pages.
+   */
+  applyPageRemap: (remap: PageRemap) => void;
 }
 
 const EMPTY: Snapshot = { annotations: [], edits: [] };
@@ -123,5 +137,18 @@ export const useAnnotationStore = create<AnnotationState>((set, get) => {
       set({ ...EMPTY, dirty: false, past: [], future: [] }),
 
     markSaved: () => set({ dirty: false }),
+
+    markDirty: () => set({ dirty: true }),
+
+    applyPageRemap: (remap) =>
+      set((s) => ({
+        annotations: remapAnnotations(s.annotations, remap),
+        edits: remapEdits(s.edits, remap),
+        // The document structure changed in the engine, so there is always
+        // unsaved state now, and old snapshots are no longer index-valid.
+        dirty: true,
+        past: [],
+        future: [],
+      })),
   };
 });

@@ -9,11 +9,14 @@
  */
 import { create } from "zustand";
 import type { DocumentMeta, PageTextLayer } from "@/types/pdf";
+import { useAnnotationStore } from "@/stores/annotation-store";
 import {
   openPdf as openPdfCmd,
   openPdfBytes as openPdfBytesCmd,
   closePdf as closePdfCmd,
   getPageText,
+  transformPages,
+  type PageOp,
   type SearchHit,
 } from "@/lib/tauri";
 
@@ -64,6 +67,14 @@ interface DocumentState {
 
   /** Fetch (and cache) the text layer for a page. */
   ensureTextLayer: (pageIndex: number) => Promise<PageTextLayer | null>;
+
+  /**
+   * Apply a structural page operation in the engine and refresh the metadata.
+   * Cached text layers are invalidated (page indices/geometry changed); the
+   * new `meta` identity makes pages and thumbnails re-render themselves.
+   * Throws on failure so callers can surface the error.
+   */
+  applyPageOp: (op: PageOp) => Promise<void>;
 }
 
 export const useDocumentStore = create<DocumentState>((set, get) => ({
@@ -131,6 +142,23 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
 
   zoomIn: () => get().setScale(roundScale(get().scale * 1.2)),
   zoomOut: () => get().setScale(roundScale(get().scale / 1.2)),
+
+  applyPageOp: async (op) => {
+    const { meta, currentPage } = get();
+    if (!meta) return;
+    const newMeta = await transformPages(meta.id, op);
+    set({
+      meta: newMeta,
+      textLayers: {},
+      activeSearchHit: null,
+      currentPage: Math.min(currentPage, Math.max(0, newMeta.pageCount - 1)),
+    });
+    // Every op except extraction mutates the in-memory document, so there is
+    // now unsaved state regardless of whether any markup remap follows.
+    if (op.type !== "extractPage") {
+      useAnnotationStore.getState().markDirty();
+    }
+  },
 
   ensureTextLayer: async (pageIndex) => {
     const { meta, textLayers } = get();
