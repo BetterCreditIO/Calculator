@@ -341,7 +341,30 @@ save site maps display→page through one verified, unit-tested transform.
 Re-stamped text on rotated pages is pre-rotated with the matching text matrix
 so it displays upright.
 
-## 16. Known limitations & future work
+## 16. OCR fallback for scanned / print-to-PDF documents
+
+Printer drivers (notably **Microsoft Print to PDF**) and scanners often emit
+pages with **zero fonts and zero text operators** — the page is images or
+vector outlines. PDFium correctly reports no text there. For such pages the
+engine falls back to the **Windows built-in OCR engine** (`Windows.Media.Ocr`,
+`src-tauri/src/pdf/ocr.rs`): ships with Windows 10/11, fully offline, respects
+the user's languages, zero installer cost (on other platforms recognition is
+unavailable and behavior is unchanged).
+
+Pipeline (`engine.rs::text_layer_with_ocr`): when a page yields no embedded
+text, it is rendered at high density (bounded by the engine's dimension cap),
+recognized, and the word boxes are grouped into line-level runs with the same
+column-gap rule the embedded-text extractor uses — Excel-style cells stay
+individually editable. Each run's **ink color is estimated from the rendered
+pixels** (dark-cluster average) so re-stamped edits keep the original text
+color; font size and baseline derive from the box metrics. Results are cached
+per page in the engine (recognition costs ~100s of ms) and reused by
+full-document search, so scans are searchable; the cache clears when page
+operations change the document. The UI shows a one-time notice and an "OCR"
+chip in the status bar; edits on recognized text flow through the standard
+Tier-2 matched-font re-stamp.
+
+## 17. Known limitations & future work
 
 - Tier-2 edits substitute the closest standard-14 font when the original
   (typically a subsetted embed) can't safely render the new characters (§5.4).
@@ -354,6 +377,10 @@ so it displays upright.
   natural enhancement.
 - In-place (Tier-1) edits keep the object's original layout matrix; a large
   length change can alter line justification, as it does in other editors.
+- OCR runs only when a page has NO embedded text; mixed pages (partial real
+  text + rasterized regions) keep just their embedded text for now.
+- OCR font matching defaults to the sans family (correct for typical
+  spreadsheet/report prints); glyph-shape-based serif detection is future work.
 - Page operations are immediate (confirmed for delete) and clear the
   markup undo history; ops themselves are not undoable until Save-as keeps the
   original file intact.

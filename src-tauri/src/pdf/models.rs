@@ -76,6 +76,8 @@ pub struct PageTextLayer {
     pub page_index: usize,
     pub size: PageSize,
     pub spans: Vec<TextSpan>,
+    /// True when the spans came from OCR (the page has no embedded text).
+    pub ocr: bool,
 }
 
 /// A single full-text search hit.

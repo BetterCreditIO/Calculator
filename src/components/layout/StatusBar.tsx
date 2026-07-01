@@ -1,4 +1,4 @@
-import { FileText, Circle, CheckCircle2 } from "lucide-react";
+import { FileText, Circle, CheckCircle2, ScanText } from "lucide-react";
 import { useDocumentStore } from "@/stores/document-store";
 import { useAnnotationStore } from "@/stores/annotation-store";
 import { formatBytes } from "@/lib/utils";
@@ -8,6 +8,9 @@ export function StatusBar() {
   const meta = useDocumentStore((s) => s.meta);
   const currentPage = useDocumentStore((s) => s.currentPage);
   const scale = useDocumentStore((s) => s.scale);
+  const currentLayerOcr = useDocumentStore(
+    (s) => s.textLayers[s.currentPage]?.ocr ?? false,
+  );
   const dirty = useAnnotationStore((s) => s.dirty);
   const annotationCount = useAnnotationStore((s) => s.annotations.length);
   const editCount = useAnnotationStore((s) => s.edits.length);
@@ -22,6 +25,15 @@ export function StatusBar() {
         {meta && (
           <span className="tabular-nums">
             Page {currentPage + 1} of {meta.pageCount}
+          </span>
+        )}
+        {meta && currentLayerOcr && (
+          <span
+            className="flex items-center gap-1 text-primary"
+            title="This page has no embedded text; its text layer was recognized with OCR."
+          >
+            <ScanText className="h-3.5 w-3.5" />
+            OCR
           </span>
         )}
       </div>

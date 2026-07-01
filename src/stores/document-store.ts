@@ -10,6 +10,7 @@
 import { create } from "zustand";
 import type { DocumentMeta, PageTextLayer } from "@/types/pdf";
 import { useAnnotationStore } from "@/stores/annotation-store";
+import { toast } from "@/hooks/use-toast";
 import {
   openPdf as openPdfCmd,
   openPdfBytes as openPdfBytesCmd,
@@ -46,6 +47,9 @@ interface DocumentState {
 
   /** Cached text layers by page index (lazily fetched). */
   textLayers: Record<number, PageTextLayer | undefined>;
+
+  /** Whether the one-time "recognized with OCR" notice was shown for this doc. */
+  ocrNoticeShown: boolean;
 
   /** The search hit currently navigated to (highlighted on its page). */
   activeSearchHit: SearchHit | null;
@@ -86,6 +90,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   fitMode: "width",
   pendingScrollPage: null,
   textLayers: {},
+  ocrNoticeShown: false,
   activeSearchHit: null,
   setActiveSearchHit: (activeSearchHit) => set({ activeSearchHit }),
 
@@ -168,6 +173,14 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     try {
       const layer = await getPageText(meta.id, pageIndex);
       set((s) => ({ textLayers: { ...s.textLayers, [pageIndex]: layer } }));
+      // Tell the user once per document when text had to be recognized.
+      if (layer.ocr && !get().ocrNoticeShown) {
+        set({ ocrNoticeShown: true });
+        toast.show(
+          "Text recognized with OCR",
+          "This page has no embedded text, so GoodBoyPdf recognized it from the image. You can select, search, and edit — edits are re-stamped in a matched font.",
+        );
+      }
       return layer;
     } catch {
       return null;
@@ -195,6 +208,7 @@ async function loadDocument(
     error: null,
     textLayers: {},
     activeSearchHit: null,
+    ocrNoticeShown: false,
   });
   try {
     const meta = await loader();

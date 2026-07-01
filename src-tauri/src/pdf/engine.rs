@@ -41,6 +41,7 @@ use crate::pdf::models::{
     Annotation, AnnotationType, DocumentMeta, PageOp, PageSize, PageTextLayer, Rect, SearchHit,
     TextEdit, TextSpan,
 };
+use crate::pdf::ocr::{self, OcrWordBox};
 
 /// A document held open by the engine. The raw bytes are the SOURCE OF TRUTH:
 /// structural page operations replace them in place (persisted to disk only on
@@ -52,6 +53,11 @@ struct LoadedDoc {
     /// operation carries the same identity.
     path: Option<String>,
     name: String,
+    /// Recognized (OCR) text layers, cached per page for pages that have no
+    /// embedded text. Recognition costs hundreds of milliseconds per page, so
+    /// results are reused by both the text layer and full-document search.
+    /// Cleared whenever the document bytes change (page operations).
+    ocr_layers: HashMap<usize, Vec<TextSpan>>,
 }
 
 /// Work items handled by the engine thread. Each carries a reply `Sender`.
@@ -204,6 +210,10 @@ impl PdfEngine {
 // ===========================================================================
 
 fn run_worker(rx: Receiver<EngineRequest>, lib_dir: Option<PathBuf>) {
+    // The OCR fallback uses WinRT APIs, which require runtime initialization
+    // on the calling thread (no-op on other platforms).
+    ocr::platform::init_thread();
+
     // Bind Pdfium once for the lifetime of the thread. On failure, `pdfium`
     // stays None and operations report EngineUnavailable.
     let pdfium = match init_pdfium(lib_dir.as_deref()) {
@@ -231,7 +241,15 @@ fn run_worker(rx: Receiver<EngineRequest>, lib_dir: Option<PathBuf>) {
                 let result = guard(|| {
                     with_pdfium(&pdfium, |pdfium| {
                         let meta = build_meta(pdfium, &id, &bytes, path.clone(), &name)?;
-                        docs.insert(id.clone(), LoadedDoc { bytes, path, name });
+                        docs.insert(
+                            id.clone(),
+                            LoadedDoc {
+                                bytes,
+                                path,
+                                name,
+                                ocr_layers: HashMap::new(),
+                            },
+                        );
                         Ok(meta)
                     })
                 });
@@ -262,8 +280,15 @@ fn run_worker(rx: Receiver<EngineRequest>, lib_dir: Option<PathBuf>) {
             } => {
                 let result = guard(|| {
                     with_pdfium(&pdfium, |pdfium| {
-                        let doc = docs.get(&id).ok_or(PdfError::DocumentNotFound)?;
-                        page_text_layer(pdfium, &doc.bytes, page_index)
+                        // Take the OCR cache out so the doc entry can be
+                        // borrowed immutably for parsing while the cache is
+                        // read/written locally; put it back afterwards.
+                        let doc = docs.get_mut(&id).ok_or(PdfError::DocumentNotFound)?;
+                        let mut cache = std::mem::take(&mut doc.ocr_layers);
+                        let outcome =
+                            text_layer_with_ocr(pdfium, &doc.bytes, page_index, &mut cache);
+                        doc.ocr_layers = cache;
+                        outcome
                     })
                 });
                 let _ = reply.send(result);
@@ -271,8 +296,11 @@ fn run_worker(rx: Receiver<EngineRequest>, lib_dir: Option<PathBuf>) {
             EngineRequest::Search { id, query, reply } => {
                 let result = guard(|| {
                     with_pdfium(&pdfium, |pdfium| {
-                        let doc = docs.get(&id).ok_or(PdfError::DocumentNotFound)?;
-                        search_document(pdfium, &doc.bytes, &query)
+                        let doc = docs.get_mut(&id).ok_or(PdfError::DocumentNotFound)?;
+                        let mut cache = std::mem::take(&mut doc.ocr_layers);
+                        let outcome = search_document(pdfium, &doc.bytes, &query, &mut cache);
+                        doc.ocr_layers = cache;
+                        outcome
                     })
                 });
                 let _ = reply.send(result);
@@ -297,9 +325,11 @@ fn run_worker(rx: Receiver<EngineRequest>, lib_dir: Option<PathBuf>) {
                     with_pdfium(&pdfium, |pdfium| {
                         let doc = docs.get_mut(&id).ok_or(PdfError::DocumentNotFound)?;
                         // Apply the op; a mutating op returns the replacement
-                        // bytes, which become the new source of truth.
+                        // bytes, which become the new source of truth. Cached
+                        // OCR layers are keyed by the old page structure.
                         if let Some(new_bytes) = apply_page_op(pdfium, &doc.bytes, &op)? {
                             doc.bytes = new_bytes;
+                            doc.ocr_layers.clear();
                         }
                         build_meta(pdfium, &id, &doc.bytes, doc.path.clone(), &doc.name)
                     })
@@ -493,7 +523,286 @@ fn page_text_layer(pdfium: &Pdfium, bytes: &[u8], page_index: usize) -> PdfResul
         page_index,
         size,
         spans,
+        ocr: false,
     })
+}
+
+/// Produce the text layer for a page, falling back to OCR (with a per-doc
+/// cache) when the page has no embedded text — the "Microsoft Print to PDF" /
+/// scanned-document case, where the page is images or vector outlines only.
+fn text_layer_with_ocr(
+    pdfium: &Pdfium,
+    bytes: &[u8],
+    page_index: usize,
+    cache: &mut HashMap<usize, Vec<TextSpan>>,
+) -> PdfResult<PageTextLayer> {
+    let layer = page_text_layer(pdfium, bytes, page_index)?;
+    if !layer.spans.is_empty() {
+        return Ok(layer);
+    }
+
+    let spans = match cache.get(&page_index) {
+        Some(cached) => cached.clone(),
+        None => {
+            let document = pdfium.load_pdf_from_byte_slice(bytes, None)?;
+            let pages = document.pages();
+            let page = pages
+                .get(page_index as i32)
+                .map_err(|_| PdfError::PageOutOfRange(page_index))?;
+            // A recognition failure must not take down the whole text layer:
+            // degrade to "no text" (the pre-OCR behavior) and cache it so the
+            // expensive render isn't retried on every scroll.
+            let spans = ocr_spans_for_page(&page).unwrap_or_else(|e| {
+                log::warn!("page {}: OCR failed: {e}", page_index + 1);
+                Vec::new()
+            });
+            log::info!(
+                "page {}: no embedded text; OCR recognized {} span(s)",
+                page_index + 1,
+                spans.len()
+            );
+            cache.insert(page_index, spans.clone());
+            spans
+        }
+    };
+
+    Ok(PageTextLayer {
+        ocr: !spans.is_empty(),
+        spans,
+        ..layer
+    })
+}
+
+/// Render a page and recognize its text with the platform OCR engine,
+/// producing display-space spans. Returns an empty list when OCR is
+/// unavailable (non-Windows, or no language pack).
+fn ocr_spans_for_page(page: &PdfPage) -> PdfResult<Vec<TextSpan>> {
+    // Skip the expensive high-resolution render entirely when recognition is
+    // unavailable (non-Windows, or no OCR language pack installed).
+    if !ocr::platform::available() {
+        return Ok(Vec::new());
+    }
+
+    let display_w = page.width().value;
+    let display_h = page.height().value;
+    if display_w <= 0.0 || display_h <= 0.0 {
+        return Ok(Vec::new());
+    }
+
+    // Render as large as the OCR engine allows (quality), staying safely
+    // inside its dimension cap on BOTH axes: both maximum width and height
+    // are clamped in the render config, and pdfium preserves aspect ratio
+    // when a constraint binds — so px_per_point derived from the actual
+    // rendered width stays exact even for extreme banner/plotter pages.
+    let max_dim = (ocr::platform::max_dimension().min(4000) as f32) - 8.0;
+    let target_long_side = 2200.0_f32.min(max_dim);
+    let scale = (target_long_side / display_w.max(display_h)).clamp(0.5, 6.0);
+
+    let config = PdfRenderConfig::new()
+        .set_target_width((display_w * scale).round() as i32)
+        .set_maximum_width(max_dim as i32)
+        .set_maximum_height(max_dim as i32);
+    let bitmap = page.render_with_config(&config)?;
+    let rgba = bitmap.as_rgba_bytes();
+    let px_w = bitmap.width() as i32;
+    let px_h = bitmap.height() as i32;
+    if px_w <= 0 || px_h <= 0 {
+        return Ok(Vec::new());
+    }
+    // Actual pixels-per-point (robust to any rounding by the renderer).
+    let px_per_point = px_w as f32 / display_w;
+
+    // The recognizer wants BGRA8; Pdfium hands back RGBA.
+    let mut bgra = rgba.clone();
+    for px in bgra.chunks_exact_mut(4) {
+        px.swap(0, 2);
+    }
+
+    let Some(words) = ocr::platform::recognize_words(&bgra, px_w, px_h)? else {
+        return Ok(Vec::new());
+    };
+
+    Ok(ocr_words_to_spans(words, &rgba, px_w, px_h, px_per_point))
+}
+
+/// Group recognized words into line-level runs and convert to display-space
+/// [`TextSpan`]s, estimating each run's ink color from the rendered pixels so
+/// re-stamped edits keep the original text color.
+fn ocr_words_to_spans(
+    words: Vec<OcrWordBox>,
+    rgba: &[u8],
+    px_w: i32,
+    px_h: i32,
+    px_per_point: f32,
+) -> Vec<TextSpan> {
+    // 1. Cluster words into visual lines by vertical-center proximity.
+    struct Line {
+        words: Vec<OcrWordBox>,
+        center_sum: f32,
+        height_sum: f32,
+    }
+    let mut lines: Vec<Line> = Vec::new();
+    'words: for word in words {
+        let center = word.y + word.height / 2.0;
+        for line in lines.iter_mut() {
+            let line_center = line.center_sum / line.words.len() as f32;
+            let line_height = line.height_sum / line.words.len() as f32;
+            if (center - line_center).abs() <= line_height.max(1.0) * 0.6 {
+                line.center_sum += center;
+                line.height_sum += word.height;
+                line.words.push(word);
+                continue 'words;
+            }
+        }
+        lines.push(Line {
+            center_sum: center,
+            height_sum: word.height,
+            words: vec![word],
+        });
+    }
+
+    // 2. Within each line (left-to-right), split into runs on column-sized
+    //    gaps — the same rule the embedded-text extractor uses, which keeps
+    //    table cells (the Excel case) individually editable.
+    let mut spans: Vec<TextSpan> = Vec::new();
+    for mut line in lines {
+        line.words
+            .sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut run: Vec<&OcrWordBox> = Vec::new();
+        let flush = |run: &mut Vec<&OcrWordBox>, spans: &mut Vec<TextSpan>| {
+            if run.is_empty() {
+                return;
+            }
+            let x0 = run.iter().map(|w| w.x).fold(f32::MAX, f32::min);
+            let y0 = run.iter().map(|w| w.y).fold(f32::MAX, f32::min);
+            let x1 = run.iter().map(|w| w.x + w.width).fold(f32::MIN, f32::max);
+            let y1 = run.iter().map(|w| w.y + w.height).fold(f32::MIN, f32::max);
+            let text = run
+                .iter()
+                .map(|w| w.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            let height_pt = (y1 - y0) / px_per_point;
+            let bounds = Rect {
+                x: x0 / px_per_point,
+                y: y0 / px_per_point,
+                width: (x1 - x0) / px_per_point,
+                height: height_pt,
+            };
+            spans.push(TextSpan {
+                index: 0,
+                text,
+                bounds,
+                // Word boxes hug cap-height/ascenders; the em size is a bit
+                // larger than the visual box.
+                font_size: (height_pt * 1.05).max(1.0),
+                font_name: None,
+                bold: false,
+                italic: false,
+                color: estimate_ink_color(rgba, px_w, px_h, x0, y0, x1, y1),
+                rotation: 0.0,
+                baseline: bounds.y + height_pt * 0.85,
+            });
+            run.clear();
+        };
+
+        for i in 0..line.words.len() {
+            if let Some(previous) = line.words.get(i.wrapping_sub(1)) {
+                let word = &line.words[i];
+                let gap = word.x - (previous.x + previous.width);
+                if gap > word.height.max(previous.height) * 2.0 {
+                    flush(&mut run, &mut spans);
+                }
+            }
+            run.push(&line.words[i]);
+        }
+        flush(&mut run, &mut spans);
+    }
+
+    // Stable indices, reading order (top-to-bottom, then left-to-right).
+    spans.sort_by(|a, b| {
+        (a.bounds.y, a.bounds.x)
+            .partial_cmp(&(b.bounds.y, b.bounds.x))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for (i, s) in spans.iter_mut().enumerate() {
+        s.index = i;
+    }
+    spans
+}
+
+/// Estimate the dominant ink (text) color inside a pixel rect: average the
+/// pixels darker than the local midpoint luminance. Returns None for regions
+/// with no discernible ink.
+fn estimate_ink_color(
+    rgba: &[u8],
+    px_w: i32,
+    px_h: i32,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+) -> Option<String> {
+    let left = (x0.floor() as i32).clamp(0, px_w - 1);
+    let right = (x1.ceil() as i32).clamp(0, px_w - 1);
+    let top = (y0.floor() as i32).clamp(0, px_h - 1);
+    let bottom = (y1.ceil() as i32).clamp(0, px_h - 1);
+    if right <= left || bottom <= top {
+        return None;
+    }
+
+    // Sample at most ~4k pixels for speed.
+    let area = ((right - left + 1) as i64) * ((bottom - top + 1) as i64);
+    let step = (((area / 4096) as f64).sqrt().ceil() as i32).max(1);
+
+    let luma =
+        |r: u8, g: u8, b: u8| -> f32 { 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32 };
+
+    let mut min_l = f32::MAX;
+    let mut max_l = f32::MIN;
+    let mut samples: Vec<(u8, u8, u8, f32)> = Vec::new();
+    let mut y = top;
+    while y <= bottom {
+        let mut x = left;
+        while x <= right {
+            let i = ((y * px_w + x) * 4) as usize;
+            if i + 2 < rgba.len() {
+                let (r, g, b) = (rgba[i], rgba[i + 1], rgba[i + 2]);
+                let l = luma(r, g, b);
+                min_l = min_l.min(l);
+                max_l = max_l.max(l);
+                samples.push((r, g, b, l));
+            }
+            x += step;
+        }
+        y += step;
+    }
+    if samples.is_empty() || max_l - min_l < 32.0 {
+        return None; // flat region — no ink to measure
+    }
+
+    let threshold = (min_l + max_l) / 2.0;
+    let mut count = 0u32;
+    let (mut sr, mut sg, mut sb) = (0u32, 0u32, 0u32);
+    for (r, g, b, l) in samples {
+        if l < threshold {
+            sr += r as u32;
+            sg += g as u32;
+            sb += b as u32;
+            count += 1;
+        }
+    }
+    if count < 4 {
+        return None;
+    }
+    Some(format!(
+        "#{:02x}{:02x}{:02x}",
+        (sr / count) as u8,
+        (sg / count) as u8,
+        (sb / count) as u8
+    ))
 }
 
 /// Per-page coordinate mapper between PDFium's UNROTATED page space (points,
@@ -592,8 +901,9 @@ impl PageGeometry {
 }
 
 /// Convert a Pdfium rect (bottom-left origin, points) into our normalized
-/// top-left, point-based rect. Rotation-0 fast path; rotated pages go through
-/// [`PageGeometry::rect_to_display`].
+/// top-left, point-based rect. The documented rotation-0 reference transform;
+/// production code goes through [`PageGeometry`], tests exercise this directly.
+#[cfg_attr(not(test), allow(dead_code))]
 fn to_top_left_rect(r: &PdfRect, page_height: f32) -> Rect {
     // PdfRect exposes its edges via accessor methods returning PdfPoints.
     let left = r.left().value;
@@ -835,8 +1145,14 @@ fn build_spans(text: &PdfPageText, geometry: &PageGeometry) -> Vec<TextSpan> {
     spans
 }
 
-/// Case-insensitive full-text search across the whole document.
-fn search_document(pdfium: &Pdfium, bytes: &[u8], query: &str) -> PdfResult<Vec<SearchHit>> {
+/// Case-insensitive full-text search across the whole document. Pages without
+/// embedded text are recognized via OCR (cached), so scans are searchable too.
+fn search_document(
+    pdfium: &Pdfium,
+    bytes: &[u8],
+    query: &str,
+    ocr_cache: &mut HashMap<usize, Vec<TextSpan>>,
+) -> PdfResult<Vec<SearchHit>> {
     let needle = query.trim().to_lowercase();
     if needle.is_empty() {
         return Ok(Vec::new());
@@ -848,7 +1164,17 @@ fn search_document(pdfium: &Pdfium, bytes: &[u8], query: &str) -> PdfResult<Vec<
     for (page_index, page) in document.pages().iter().enumerate() {
         let geometry = PageGeometry::from_page(&page);
         let Ok(text) = page.text() else { continue };
-        let spans = build_spans(&text, &geometry);
+        let mut spans = build_spans(&text, &geometry);
+        if spans.is_empty() {
+            spans = match ocr_cache.get(&page_index) {
+                Some(cached) => cached.clone(),
+                None => {
+                    let recognized = ocr_spans_for_page(&page).unwrap_or_default();
+                    ocr_cache.insert(page_index, recognized.clone());
+                    recognized
+                }
+            };
+        }
 
         // Join span texts with single spaces; track each span's char offset so
         // a match can be mapped back to the span it starts in.
@@ -1306,6 +1632,9 @@ fn overlap_fraction(outer: &PdfRect, target: &PdfRect) -> f32 {
 }
 
 /// Convert our top-left point rect back into a Pdfium bottom-left `PdfRect`.
+/// Rotation-0 reference inverse of [`to_top_left_rect`]; production code goes
+/// through [`PageGeometry`], tests exercise this directly.
+#[cfg_attr(not(test), allow(dead_code))]
 fn to_pdf_rect(r: &Rect, page_height: f32) -> PdfRect {
     let left = r.x;
     let right = r.x + r.width;

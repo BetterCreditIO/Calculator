@@ -36,6 +36,10 @@ that feels trustworthy and works without jank.
 - Page organizer: rotate, reorder, delete, insert blank, extract a page, and
   merge (append) PDFs — right from the thumbnail sidebar, with rotation-correct
   text selection on rotated pages
+- Scanned & print-to-PDF documents: pages with no embedded text get an
+  automatic OCR text layer (Windows built-in engine, fully offline) — select,
+  search, and edit them like any other page, with ink color sampled from the
+  pixels for faithful re-stamping
 - Page-thumbnail sidebar (HiDPI-sharp), full-text search with on-page hit
   highlighting, cursor-anchored Ctrl+wheel zoom, fit-width / fit-page
 - Undo/redo, keyboard shortcuts, dark & light themes

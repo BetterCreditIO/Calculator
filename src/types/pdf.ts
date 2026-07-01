@@ -104,6 +104,12 @@ export interface PageTextLayer {
   /** Page size used to compute the layout (for scale derivation). */
   size: PageSize;
   spans: TextSpan[];
+  /**
+   * True when the spans were produced by OCR because the page has no embedded
+   * text (scans, "print to PDF" rasters). Selection/search/editing all work;
+   * edits re-stamp in a matched font via the standard Tier-2 path.
+   */
+  ocr: boolean;
 }
 
 /**
