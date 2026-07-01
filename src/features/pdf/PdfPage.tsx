@@ -8,7 +8,7 @@
  * their exact layout box so scrolling and the scrollbar remain accurate, and
  * the high-DPI raster keeps text crisp on any display.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { PageSize, Rect } from "@/types/pdf";
 import { useDocumentStore } from "@/stores/document-store";
 import { useAnnotationStore } from "@/stores/annotation-store";
@@ -39,7 +39,6 @@ export function PdfPage({ size, scale }: PdfPageProps) {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [errored, setErrored] = useState(false);
-  const urlRef = useRef<string | null>(null);
 
   const widthPx = Math.round(size.width * scale);
   const heightPx = Math.round(size.height * scale);
@@ -55,12 +54,7 @@ export function PdfPage({ size, scale }: PdfPageProps) {
     setErrored(false);
     renderPage(meta.id, size.pageIndex, renderScale)
       .then((url) => {
-        if (cancelled) {
-          URL.revokeObjectURL(url);
-          return;
-        }
-        if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-        urlRef.current = url;
+        if (cancelled) return;
         setImageUrl(url);
         setLoading(false);
       })
@@ -82,13 +76,6 @@ export function PdfPage({ size, scale }: PdfPageProps) {
       void ensureTextLayer(size.pageIndex);
     }
   }, [inView, meta, textLayer, ensureTextLayer, size.pageIndex]);
-
-  // Revoke the object URL on unmount.
-  useEffect(() => {
-    return () => {
-      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-    };
-  }, []);
 
   /** Convert the current text selection into a markup annotation. */
   function handleMouseUp() {

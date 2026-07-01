@@ -3,7 +3,7 @@
  * same backend path as the main viewer (only when scrolled into view) and
  * highlights the current page. Clicking navigates the main viewport.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { PageSize } from "@/types/pdf";
 import { useDocumentStore } from "@/stores/document-store";
 import { renderPage } from "@/lib/tauri";
@@ -48,7 +48,6 @@ function Thumbnail({
   const meta = useDocumentStore((s) => s.meta);
   const [ref, inView] = useInView<HTMLButtonElement>("400px");
   const [url, setUrl] = useState<string | null>(null);
-  const urlRef = useRef<string | null>(null);
 
   const aspect = size.height / size.width;
   const thumbHeight = Math.round(THUMB_WIDTH * aspect);
@@ -57,10 +56,6 @@ function Thumbnail({
   // Reset the cached raster when the document changes, so a thumbnail reused
   // (by page index) across a document switch doesn't show the previous PDF.
   useEffect(() => {
-    if (urlRef.current) {
-      URL.revokeObjectURL(urlRef.current);
-      urlRef.current = null;
-    }
     setUrl(null);
   }, [meta?.id]);
 
@@ -69,26 +64,13 @@ function Thumbnail({
     let cancelled = false;
     renderPage(meta.id, size.pageIndex, thumbScale)
       .then((u) => {
-        if (cancelled) {
-          URL.revokeObjectURL(u);
-          return;
-        }
-        // Revoke any prior raster before swapping in the new one.
-        if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-        urlRef.current = u;
-        setUrl(u);
+        if (!cancelled) setUrl(u);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
   }, [meta, inView, size.pageIndex, thumbScale]);
-
-  useEffect(() => {
-    return () => {
-      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-    };
-  }, []);
 
   return (
     <button

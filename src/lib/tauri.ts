@@ -91,25 +91,18 @@ export function closePdf(id: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Render a page to a PNG at the given scale (cssPixels per PDF point) and
- * return an object URL for the decoded image. The backend streams raw PNG
- * bytes over IPC as an ArrayBuffer (no base64 bloat); we wrap them in a Blob.
- *
- * The caller owns the returned URL and MUST `URL.revokeObjectURL` it when the
- * page is unmounted or re-rendered to avoid leaking blobs.
+ * Render a page at the given scale (cssPixels per PDF point) and return a ready
+ * `data:image/png;base64,…` URL suitable for an `<img src>`. The backend
+ * base64-encodes the PNG; data URLs need no lifecycle management (no
+ * `revokeObjectURL`) and are permitted by the app's `img-src data:` CSP.
  */
 export async function renderPage(
   id: string,
   pageIndex: number,
   scale: number,
 ): Promise<string> {
-  const bytes = await invoke<ArrayBuffer>("render_page", {
-    id,
-    pageIndex,
-    scale,
-  });
-  const blob = new Blob([bytes], { type: "image/png" });
-  return URL.createObjectURL(blob);
+  const base64 = await invoke<string>("render_page", { id, pageIndex, scale });
+  return `data:image/png;base64,${base64}`;
 }
 
 /** Extract the selectable/editable text layer for a single page. */

@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use tauri::ipc::Response;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use tauri::State;
 use uuid::Uuid;
 
@@ -53,16 +53,19 @@ pub fn close_pdf(engine: State<'_, PdfEngine>, id: String) -> PdfResult<()> {
     engine.close(id)
 }
 
-/// Render a page to PNG at the given scale; returns raw bytes as an ArrayBuffer.
+/// Render a page to a PNG at the given scale and return it base64-encoded. The
+/// frontend wraps this in a `data:image/png;base64,…` URL. Base64 is a little
+/// larger on the wire than raw bytes, but it is a rock-solid transport that
+/// avoids binary-IPC / blob-URL edge cases, and rasters are cached client-side.
 #[tauri::command]
 pub fn render_page(
     engine: State<'_, PdfEngine>,
     id: String,
     page_index: usize,
     scale: f32,
-) -> PdfResult<Response> {
+) -> PdfResult<String> {
     let png = engine.render(id, page_index, scale.clamp(0.05, 8.0))?;
-    Ok(Response::new(png))
+    Ok(STANDARD.encode(png))
 }
 
 /// Fetch the selectable/editable text layer for a page.
