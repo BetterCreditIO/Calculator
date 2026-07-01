@@ -890,8 +890,18 @@ fn try_set_text_in_place(page: &mut PdfPage, edit: &TextEdit) -> PdfResult<bool>
             continue;
         };
         let obj_rect = quad.to_rect();
-        // The edited run must lie (mostly) inside this object's box.
+        // The edited run must lie (mostly) inside this object's box…
         if overlap_fraction(&obj_rect, &target) < 0.5 {
+            continue;
+        }
+        // …and the object must be line-shaped relative to the run. A page-
+        // covering object (watermark, rotated header) whose text happens to
+        // contain the edited string must not win the match; height is the
+        // discriminator because text objects are line-ish while page-scale
+        // objects (and rotated ones, via their axis-aligned bounds) are tall.
+        let obj_height = obj_rect.top().value - obj_rect.bottom().value;
+        let target_height = (target.top().value - target.bottom().value).max(1.0);
+        if obj_height > target_height * 4.0 {
             continue;
         }
 
