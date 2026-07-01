@@ -42,6 +42,10 @@ export function EmptyState() {
           Tip: press <Kbd>Ctrl</Kbd>+<Kbd>O</Kbd> to open, <Kbd>Ctrl</Kbd>+
           <Kbd>M</Kbd> for the calculator
         </div>
+
+        <p className="mt-6 select-none text-[11px] tracking-wide text-muted-foreground/50">
+          GoodBoyPdf · produced by Goodboy Labs
+        </p>
       </div>
     </div>
   );

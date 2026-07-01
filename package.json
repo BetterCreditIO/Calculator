@@ -1,10 +1,10 @@
 {
-  "name": "lumen-pdf",
+  "name": "goodboypdf",
   "version": "1.0.0",
-  "description": "Lumen PDF — a premium desktop PDF editor with an integrated Illinois mortgage calculator.",
+  "description": "GoodBoyPdf — a premium desktop PDF editor with an integrated Illinois mortgage calculator. Produced by Goodboy Labs.",
   "type": "module",
   "private": true,
-  "author": "BetterCredit.io",
+  "author": "Goodboy Labs",
   "license": "MIT",
   "scripts": {
     "dev": "vite",

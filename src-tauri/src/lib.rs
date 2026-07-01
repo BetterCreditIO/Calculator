@@ -1,4 +1,4 @@
-//! Lumen PDF — Tauri application entry point (library half).
+//! GoodBoyPdf — Tauri application entry point (library half). Produced by Goodboy Labs.
 //!
 //! Wires up plugins, spawns the PDF engine as managed state, and registers the
 //! command handlers. `main.rs` simply calls [`run`].
@@ -46,5 +46,5 @@ pub fn run() {
             pdf::commands::save_document,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running the Lumen PDF application");
+        .expect("error while running the GoodBoyPdf application");
 }

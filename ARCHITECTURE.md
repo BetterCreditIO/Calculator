@@ -1,6 +1,8 @@
-# Lumen PDF — Architecture & Technical Plan
+# GoodBoyPdf — Architecture & Technical Plan
 
-Lumen PDF is a premium, downloadable **Windows desktop** PDF editor with an
+*Produced by Goodboy Labs*
+
+GoodBoyPdf is a premium, downloadable **Windows desktop** PDF editor with an
 integrated **Illinois mortgage & affordability calculator**. This document is
 the architectural plan: the design decisions, data flows, fidelity strategy,
 security model, and distribution mechanism. Read it before the code.

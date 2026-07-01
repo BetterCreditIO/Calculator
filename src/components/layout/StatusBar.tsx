@@ -52,6 +52,9 @@ export function StatusBar() {
           <span className="tabular-nums">{formatBytes(meta.fileSizeBytes)}</span>
         )}
         {meta && <span className="tabular-nums">{Math.round(scale * 100)}%</span>}
+        <span className="select-none text-muted-foreground/50">
+          Goodboy Labs
+        </span>
       </div>
     </footer>
   );

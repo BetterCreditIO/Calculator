@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    lumen_pdf_lib::run();
+    goodboy_pdf_lib::run();
 }

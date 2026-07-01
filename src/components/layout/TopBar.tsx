@@ -44,7 +44,7 @@ export function TopBar() {
         <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-violet-500 shadow-sm">
           <FileText className="h-4 w-4 text-white" />
         </div>
-        <span className="text-sm font-semibold tracking-tight">Lumen PDF</span>
+        <span className="text-sm font-semibold tracking-tight">GoodBoyPdf</span>
       </div>
 
       {meta && (
@@ -91,7 +91,7 @@ export function TopBar() {
           <DropdownMenuSeparator />
           <DropdownMenuItem onClick={() => setAboutOpen(true)}>
             <Info className="h-4 w-4" />
-            About Lumen PDF
+            About GoodBoyPdf
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -102,8 +102,10 @@ export function TopBar() {
             <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-violet-500">
               <FileText className="h-6 w-6 text-white" />
             </div>
-            <DialogTitle>Lumen PDF</DialogTitle>
-            <DialogDescription>Version 1.0.0</DialogDescription>
+            <DialogTitle>GoodBoyPdf</DialogTitle>
+            <DialogDescription>
+              Version 1.0.0 · Produced by Goodboy Labs
+            </DialogDescription>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             A premium desktop PDF editor with high-fidelity rendering and an
@@ -113,6 +115,9 @@ export function TopBar() {
           <p className="text-xs text-muted-foreground">
             Mortgage tax and insurance figures are estimates based on Illinois
             averages and are not financial advice.
+          </p>
+          <p className="text-xs text-muted-foreground/70">
+            © 2026 Goodboy Labs. All rights reserved.
           </p>
         </DialogContent>
       </Dialog>

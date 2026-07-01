@@ -1,8 +1,10 @@
 <div align="center">
 
-# Lumen PDF
+# GoodBoyPdf
 
 **A premium desktop PDF editor with an integrated Illinois mortgage calculator.**
+
+*Produced by Goodboy Labs*
 
 High-fidelity reading & editing powered by PDFium · built with Tauri 2, React & TypeScript
 
@@ -10,7 +12,7 @@ High-fidelity reading & editing powered by PDFium · built with Tauri 2, React &
 
 ---
 
-Lumen PDF is a fast, beautiful, native **Windows** desktop application for
+GoodBoyPdf is a fast, beautiful, native **Windows** desktop application for
 reading, marking up, and editing PDFs — with a built-in, professional-grade
 **mortgage & affordability calculator** tuned for Illinois. It is designed for
 loan officers, real-estate agents, and small-business owners who need a tool
@@ -96,7 +98,7 @@ npm run tauri:build
 ```
 
 The signed installer is written to
-`src-tauri/target/release/bundle/nsis/Lumen PDF_<version>_x64-setup.exe`, ready
+`src-tauri/target/release/bundle/nsis/GoodBoyPdf_<version>_x64-setup.exe`, ready
 to host on your website for direct download. `currentUser` install mode means no
 admin prompt.
 
@@ -106,7 +108,7 @@ admin prompt.
 ### Auto-updater setup (one-time)
 
 ```bash
-npm run tauri signer generate -- -w ~/.tauri/lumen-pdf.key
+npm run tauri signer generate -- -w ~/.tauri/goodboypdf.key
 ```
 
 1. Put the printed **public key** in `src-tauri/tauri.conf.json` →

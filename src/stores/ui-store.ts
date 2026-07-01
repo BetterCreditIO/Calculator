@@ -1,7 +1,7 @@
 /**
  * Global UI state: theme, active tool, panel visibility.
  *
- * Theme is persisted under the "lumen-theme" key. The inline script in
+ * Theme is persisted under the "goodboy-theme" key. The inline script in
  * index.html reads the SAME key before React mounts to apply the correct
  * `.dark` class immediately and avoid a flash of the wrong theme.
  */
@@ -74,7 +74,7 @@ export const useUiStore = create<UiState>()(
       setMarkupColor: (markupColor) => set({ markupColor }),
     }),
     {
-      name: "lumen-theme",
+      name: "goodboy-theme",
       // Only persist the durable preferences, not ephemeral tool/panel state.
       partialize: (s) => ({ theme: s.theme, markupColor: s.markupColor }),
     },

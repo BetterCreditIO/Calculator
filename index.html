@@ -4,14 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'" />
-    <title>Lumen PDF</title>
+    <title>GoodBoyPdf</title>
   </head>
   <body>
     <!-- Prevent flash-of-wrong-theme: apply persisted theme before React mounts. -->
     <script>
       (function () {
         try {
-          var stored = localStorage.getItem("lumen-theme");
+          var stored = localStorage.getItem("goodboy-theme");
           var theme = stored ? JSON.parse(stored).state.theme : "system";
           var dark =
             theme === "dark" ||

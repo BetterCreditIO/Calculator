@@ -47,9 +47,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "Lumen PDF v__VERSION__"
+          releaseName: "GoodBoyPdf v__VERSION__"
           releaseBody: |
-            Lumen PDF for Windows.
+            GoodBoyPdf for Windows — produced by Goodboy Labs.
 
             Download the `.exe` installer below to install. Existing installs
             update automatically via the built-in updater.

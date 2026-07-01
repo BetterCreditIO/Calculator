@@ -101,7 +101,7 @@ export const useCalculatorStore = create<CalculatorState>()(
         set((s) => ({ scenarios: s.scenarios.filter((sc) => sc.id !== id) })),
     }),
     {
-      name: "lumen-calculator",
+      name: "goodboy-calculator",
       version: 1,
     },
   ),
