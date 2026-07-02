@@ -22,7 +22,15 @@ import { computeMortgage, PMI_THRESHOLD_PERCENT } from "./lib/mortgage";
 import { PaymentBreakdownChart } from "./PaymentBreakdownChart";
 import { AmortizationTable } from "./AmortizationTable";
 import { ScenarioManager } from "./ScenarioManager";
-import { exportReport } from "./lib/export";
+import { exportReport, exportCsv } from "./lib/export";
+import { exportDocx } from "./lib/export-docx";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
+import { FileText, Table2, FileType2 } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
@@ -64,14 +72,19 @@ export function MortgageCalculator() {
 
   const belowPmiThreshold = inputs.downPaymentPercent < PMI_THRESHOLD_PERCENT;
 
-  async function handleExport() {
+  async function handleExport(kind: "docx" | "csv" | "text") {
     try {
-      const status = await exportReport(
-        inputs,
-        result,
-        county.name,
-        insuranceAnnual,
-      );
+      if (kind === "docx") {
+        const status = await exportDocx(inputs, result, county.name, insuranceAnnual);
+        if (status === "saved") toast.success("Word document exported");
+        return;
+      }
+      if (kind === "csv") {
+        const status = await exportCsv(inputs, result, county.name);
+        if (status === "saved") toast.success("Amortization CSV exported");
+        return;
+      }
+      const status = await exportReport(inputs, result, county.name, insuranceAnnual);
       if (status === "saved") toast.success("Estimate exported");
       else if (status === "copied")
         toast.success("Copied to clipboard", "Paste it anywhere.");
@@ -316,14 +329,28 @@ export function MortgageCalculator() {
                 />
               </div>
 
-              <Button
-                variant="outline"
-                className="w-full gap-2"
-                onClick={() => void handleExport()}
-              >
-                <Download className="h-4 w-4" />
-                Export estimate
-              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" className="w-full gap-2">
+                    <Download className="h-4 w-4" />
+                    Export estimate
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="center" className="w-64">
+                  <DropdownMenuItem onClick={() => void handleExport("docx")}>
+                    <FileType2 className="h-4 w-4" />
+                    Word document (.docx)
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => void handleExport("csv")}>
+                    <Table2 className="h-4 w-4" />
+                    Amortization for Excel (.csv)
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => void handleExport("text")}>
+                    <FileText className="h-4 w-4" />
+                    Plain text (.txt)
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </TabsContent>
 
             <TabsContent value="schedule" className="pt-2">

@@ -109,6 +109,16 @@ pub fn write_text_file(path: String, contents: String) -> PdfResult<()> {
     std::fs::write(&path, contents).map_err(PdfError::from)
 }
 
+/// Write a binary file from base64 (used by the .docx export). The path is
+/// user-chosen via the native save dialog.
+#[tauri::command]
+pub fn write_binary_file(path: String, contents_base64: String) -> PdfResult<()> {
+    let bytes = STANDARD
+        .decode(contents_base64.as_bytes())
+        .map_err(|e| PdfError::InvalidOperation(format!("invalid file data: {e}")))?;
+    std::fs::write(&path, bytes).map_err(PdfError::from)
+}
+
 /// Apply pending edits + annotations and save to a new PDF at `output_path`.
 #[tauri::command]
 pub fn save_document(

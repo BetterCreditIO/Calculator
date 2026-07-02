@@ -155,6 +155,14 @@ export function writeTextFile(path: string, contents: string): Promise<void> {
   return invoke<void>("write_text_file", { path, contents });
 }
 
+/** Write a binary file (base64-encoded) to a user-chosen path (.docx export). */
+export function writeBinaryFile(
+  path: string,
+  contentsBase64: string,
+): Promise<void> {
+  return invoke<void>("write_binary_file", { path, contentsBase64 });
+}
+
 /**
  * Persist all pending edits and annotations to a new PDF at `outputPath`.
  *

@@ -90,6 +90,45 @@ export function buildReportText(
   return lines.join("\n");
 }
 
+/**
+ * Export the amortization schedule as CSV for Excel: a short scenario header
+ * block, a blank line, then the year-by-year table. Numbers are raw (no $ or
+ * thousands separators) so spreadsheets treat them as numerics.
+ */
+export async function exportCsv(
+  inputs: CalculatorInputs,
+  result: MortgageResult,
+  countyName: string,
+): Promise<"saved" | "cancelled"> {
+  const path = await saveDialog({
+    defaultPath: "amortization.csv",
+    filters: [{ name: "CSV", extensions: ["csv"] }],
+    title: "Export Amortization (CSV)",
+  });
+  if (!path) return "cancelled";
+
+  const n = (v: number) => v.toFixed(2);
+  const rows: string[] = [
+    "Field,Value",
+    `Purchase Price,${n(inputs.purchasePrice)}`,
+    `Down Payment %,${inputs.downPaymentPercent}`,
+    `Loan Amount,${n(result.loanAmount)}`,
+    `Interest Rate %,${inputs.annualInterestRatePercent}`,
+    `Term (years),${inputs.loanTermYears}`,
+    `County,"${countyName}"`,
+    `Estimated Total Monthly,${n(result.monthly.total)}`,
+    "",
+    "Year,Principal Paid,Interest Paid,PMI Paid,Ending Balance",
+    ...summarizeByYear(result.schedule).map(
+      (y) =>
+        `${y.year},${n(y.principalPaid)},${n(y.interestPaid)},${n(y.pmiPaid)},${n(y.endingBalance)}`,
+    ),
+  ];
+  // CRLF line endings for best Excel compatibility.
+  await writeTextFile(path, rows.join("\r\n"));
+  return "saved";
+}
+
 /** Returns a status string for a toast, or throws on a real failure. */
 export async function exportReport(
   inputs: CalculatorInputs,

@@ -44,6 +44,7 @@ pub fn run() {
             pdf::commands::search_text,
             pdf::commands::transform_pages,
             pdf::commands::write_text_file,
+            pdf::commands::write_binary_file,
             pdf::commands::save_document,
         ])
         .run(tauri::generate_context!())
