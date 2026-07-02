@@ -155,13 +155,20 @@ uses, so this tier is taken only when every replacement character already
 occurs in that object's text; page content is explicitly regenerated afterward
 (`set_text` alone does not mark the page dirty in pdfium-render 0.9).
 
-**Tier 2 — white-out + matched-font re-stamp (fallback).** When no safe object
-match exists, the original glyph region is covered and the replacement is
-stamped as a new text object **on the original baseline** at the extracted font
-size and fill color, using the closest PDF standard-14 font
+**Tier 2 — background-matched cover + matched-font re-stamp (fallback).** When
+no safe object match exists, the original glyph region is covered and the
+replacement is stamped as a new text object **on the original baseline** at the
+extracted font size and fill color, using the closest PDF standard-14 font
 (Helvetica/Times/Courier × bold/italic) classified from the original font name
 — the same classification the on-screen preview uses, so preview and output
-agree.
+agree. The cover color is not hardcoded white: the editor **samples the page
+raster around the run** (per-channel median of the perimeter ring, robust to
+stray glyph pixels — `lib/edit-background.ts`) so edits blend into colored
+paper and shaded table cells, and a fill toolbar on the inline editor offers
+white, a custom color, the OS screen eyedropper (`EyeDropper` API), or **no
+fill at all** (`TextEdit.background = null`). An explicitly chosen color sets
+`background_explicit`, which forces Tier 2 so the choice is actually painted
+even where an in-place edit would have succeeded.
 
 **Markup:** highlight / underline / strikethrough / redaction are baked in as
 filled rectangle path objects at the recorded geometry; comments are flattened

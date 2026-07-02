@@ -32,6 +32,9 @@ that feels trustworthy and works without jank.
 - Two-tier in-place text editing: true text-object rewrites that keep the
   original embedded font where safe, with a matched-font baseline-exact
   re-stamp fallback — previewed in place before saving
+- Background-matched edits: the editor samples the page pixels around the
+  text so re-stamped edits blend into colored paper and shaded cells, with
+  a fill picker (custom color, screen eyedropper, or fully transparent)
 - Markup: highlight, underline, strikethrough, comments, redaction
 - Page organizer: rotate, reorder, delete, insert blank, extract a page, and
   merge (append) PDFs — right from the thumbnail sidebar, with rotation-correct

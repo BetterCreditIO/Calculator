@@ -239,4 +239,17 @@ export interface TextEdit {
   color: string;
   /** Baseline Y (top-left point space) the replacement text is stamped on. */
   baseline: number;
+  /**
+   * Fill painted behind the replacement when the edit is re-stamped
+   * (#rrggbb): sampled from the page raster around the original run
+   * ("auto-match"), or user-chosen. `null` paints nothing — a fully
+   * transparent edit.
+   */
+  background: string | null;
+  /**
+   * True when the user explicitly chose the background. Explicit choices
+   * force the paint-behind save path, so the color is really applied even
+   * where an in-place (no-paint) edit would have succeeded.
+   */
+  backgroundExplicit: boolean;
 }

@@ -202,6 +202,9 @@ export function PdfPage({ size, scale }: PdfPageProps) {
           spans={textLayer.spans}
           scale={scale}
           editable={activeTool === "edit"}
+          rasterUrl={imageUrl}
+          pageWidthPts={size.width}
+          pageHeightPts={size.height}
         />
       )}
       <AnnotationLayer

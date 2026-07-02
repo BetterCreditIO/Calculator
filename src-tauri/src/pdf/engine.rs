@@ -1561,7 +1561,10 @@ fn apply_page_edits(
         let mut mutated = false;
 
         for edit in edits {
-            if try_set_text_in_place(&mut page, edit)? {
+            // An explicitly chosen background must actually be painted; the
+            // in-place tier rewrites the text object without painting, so
+            // those edits go straight to the re-stamp tier.
+            if !edit.background_explicit && try_set_text_in_place(&mut page, edit)? {
                 log::info!(
                     "edit {}: in-place text-object edit (original font preserved)",
                     edit.id
@@ -1901,8 +1904,9 @@ fn match_standard_font(
     }
 }
 
-/// Tier-2 fallback: white-out the original glyphs and stamp the replacement on
-/// the ORIGINAL BASELINE at the extracted size/color with a matched font.
+/// Tier-2 fallback: cover the original glyphs in the edit's background color
+/// and stamp the replacement on the ORIGINAL BASELINE at the extracted
+/// size/color with a matched font.
 fn apply_edit_fallback(document: &mut PdfDocument, edit: &TextEdit) -> PdfResult<()> {
     // Acquire the font token FIRST: `fonts_mut()` mutably borrows the document
     // and must end before the `pages()` borrow below begins.
@@ -1919,11 +1923,15 @@ fn apply_edit_fallback(document: &mut PdfDocument, edit: &TextEdit) -> PdfResult
         .map_err(|_| PdfError::PageOutOfRange(edit.page_index))?;
     let geometry = PageGeometry::from_page(&page);
 
-    // 1. White-out the original text region.
-    let cover_rect = geometry.rect_to_page(&edit.original_bounds);
-    let white = PdfColor::new(255, 255, 255, 255);
-    let cover = PdfPagePathObject::new_rect(document, cover_rect, None, None, Some(white))?;
-    page.objects_mut().add_path_object(cover)?;
+    // 1. Cover the original text region in the edit's background — sampled
+    //    from the page raster by the frontend so it matches the paper, or
+    //    explicitly chosen by the user. `None` paints nothing (transparent).
+    if let Some(background) = edit.background.as_deref() {
+        let cover_rect = geometry.rect_to_page(&edit.original_bounds);
+        let fill = parse_color(background, 255);
+        let cover = PdfPagePathObject::new_rect(document, cover_rect, None, None, Some(fill))?;
+        page.objects_mut().add_path_object(cover)?;
+    }
 
     // 2. Stamp the replacement text on the original baseline.
     if !edit.new_text.trim().is_empty() {

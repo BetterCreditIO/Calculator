@@ -322,4 +322,15 @@ pub struct TextEdit {
     /// Baseline Y in top-left point space the replacement is stamped on.
     #[serde(default)]
     pub baseline: f32,
+    /// Fill painted behind the replacement text by the Tier-2 re-stamp
+    /// (#rrggbb). The frontend samples this from the page raster around the
+    /// original run ("auto-match") or lets the user pick it; `None` paints
+    /// nothing (a fully transparent edit).
+    #[serde(default)]
+    pub background: Option<String>,
+    /// True when the user explicitly CHOSE the background color. An explicit
+    /// choice must actually be painted, so the save path skips the in-place
+    /// tier (which never paints) for these edits.
+    #[serde(default)]
+    pub background_explicit: bool,
 }

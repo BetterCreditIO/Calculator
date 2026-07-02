@@ -88,6 +88,8 @@ function edit(pageIndex: number): TextEdit {
     italic: false,
     color: "#000000",
     baseline: 8,
+    background: "#ffffff",
+    backgroundExplicit: false,
   };
 }
 
