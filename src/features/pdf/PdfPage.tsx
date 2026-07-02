@@ -137,9 +137,16 @@ export function PdfPage({ size, scale }: PdfPageProps) {
     const box = e.currentTarget.getBoundingClientRect();
     const px = (e.clientX - box.left) / scale;
     const py = (e.clientY - box.top) / scale;
-    // Sensible default size: ~a third of the page width, aspect preserved.
-    const width = Math.min(160, size.width * 0.35);
-    const height = width / pendingSignature.aspect;
+    // Sensible default size: ~a third of the page width, aspect preserved —
+    // then cap the height too, so a tall narrow signature (a vertical
+    // flourish, a stacked monogram) can never overflow the page.
+    let width = Math.min(160, size.width * 0.35);
+    let height = width / pendingSignature.aspect;
+    const maxHeight = size.height * 0.5;
+    if (height > maxHeight) {
+      height = maxHeight;
+      width = height * pendingSignature.aspect;
+    }
     const rect = {
       x: Math.min(Math.max(0, px - width / 2), Math.max(0, size.width - width)),
       y: Math.min(Math.max(0, py - height / 2), Math.max(0, size.height - height)),

@@ -27,6 +27,18 @@ export type FitMode = "width" | "page" | "custom";
 export const MIN_SCALE = 0.25;
 export const MAX_SCALE = 6;
 
+/**
+ * Listeners run SYNCHRONOUSLY before a structural page operation is
+ * dispatched to the engine, so stores holding index-based state (the form
+ * store's widget indices) can invalidate BEFORE the indices shift. A plain
+ * registry (rather than importing those stores here) keeps the dependency
+ * direction acyclic: dependent stores import this module, never the reverse.
+ */
+const pageOpListeners = new Set<() => void>();
+export function onBeforePageOp(listener: () => void): void {
+  pageOpListeners.add(listener);
+}
+
 interface DocumentState {
   meta: DocumentMeta | null;
   status: "idle" | "loading" | "ready" | "error";
@@ -169,6 +181,10 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   applyPageOp: async (op) => {
     const { meta, currentPage } = get();
     if (!meta) return;
+    // Invalidate index-based state BEFORE the engine request is dispatched:
+    // a form commit already queued behind this op must not pass its epoch
+    // check and write to shifted widget indices.
+    pageOpListeners.forEach((listener) => listener());
     const newMeta = await transformPages(meta.id, op);
     set({
       meta: newMeta,

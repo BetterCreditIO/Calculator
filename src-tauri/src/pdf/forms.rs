@@ -47,6 +47,12 @@ pub fn list_form_fields(pdfium: &Pdfium, bytes: &[u8]) -> PdfResult<Vec<FormFiel
             let Some(field) = annotation.as_form_field() else {
                 continue;
             };
+            // Hidden/NoView helper widgets (calculation fields and the like)
+            // are not rasterized by pdfium, so a value typed into an overlay
+            // there would "vanish" — don't surface them.
+            if annotation.is_hidden() {
+                continue;
+            }
             let Some(info) = read_field(field) else {
                 continue;
             };
@@ -54,8 +60,7 @@ pub fn list_form_fields(pdfium: &Pdfium, bytes: &[u8]) -> PdfResult<Vec<FormFiel
                 continue;
             };
             let bounds = geometry.rect_to_display(&bounds);
-            // Hidden helper widgets have degenerate rects; they can't be
-            // interacted with, so don't surface them.
+            // Degenerate rects can't be interacted with either.
             if bounds.width < 1.0 || bounds.height < 1.0 {
                 continue;
             }
@@ -68,6 +73,7 @@ pub fn list_form_fields(pdfium: &Pdfium, bytes: &[u8]) -> PdfResult<Vec<FormFiel
                 value: info.value,
                 checked: info.checked,
                 options: info.options,
+                selected_index: info.selected_index,
                 read_only: field.is_read_only(),
                 multiline: info.multiline,
                 password: info.password,
@@ -166,8 +172,15 @@ unsafe fn read_form_field_value(
     if byte_len < 2 {
         return None;
     }
-    let mut buffer = vec![0u16; byte_len as usize / 2];
-    bindings.FPDFAnnot_GetFormFieldValue(form, annot, buffer.as_mut_ptr(), byte_len);
+    // Round UP so an (impossible per spec, but defended) odd byte length
+    // can't write past the buffer.
+    let mut buffer = vec![0u16; (byte_len as usize).div_ceil(2)];
+    let written =
+        bindings.FPDFAnnot_GetFormFieldValue(form, annot, buffer.as_mut_ptr(), byte_len);
+    if written != byte_len {
+        // Second call failed; keep the caller's existing value.
+        return None;
+    }
     // Drop the trailing NUL before decoding.
     while buffer.last() == Some(&0) {
         buffer.pop();
@@ -181,6 +194,7 @@ struct FieldInfo {
     value: Option<String>,
     checked: Option<bool>,
     options: Vec<String>,
+    selected_index: Option<usize>,
     multiline: bool,
     password: bool,
     editable: bool,
@@ -193,6 +207,7 @@ fn read_field(field: &PdfFormField) -> Option<FieldInfo> {
             value: f.value(),
             checked: None,
             options: Vec::new(),
+            selected_index: None,
             multiline: f.is_multiline(),
             password: f.is_password(),
             editable: true,
@@ -203,6 +218,7 @@ fn read_field(field: &PdfFormField) -> Option<FieldInfo> {
             value: None,
             checked: Some(f.is_checked().unwrap_or(false)),
             options: Vec::new(),
+            selected_index: None,
             multiline: false,
             password: false,
             editable: false,
@@ -213,26 +229,31 @@ fn read_field(field: &PdfFormField) -> Option<FieldInfo> {
             value: None,
             checked: Some(f.is_checked().unwrap_or(false)),
             options: Vec::new(),
+            selected_index: None,
             multiline: false,
             password: false,
             editable: false,
         })
     } else if let Some(f) = field.as_combo_box_field() {
+        let (options, selected_index) = read_options(f.options());
         Some(FieldInfo {
             kind: FormFieldKind::ComboBox,
             value: f.value(),
             checked: None,
-            options: option_labels(f.options()),
+            options,
+            selected_index,
             multiline: false,
             password: false,
             editable: f.has_editable_text_box(),
         })
     } else if let Some(f) = field.as_list_box_field() {
+        let (options, selected_index) = read_options(f.options());
         Some(FieldInfo {
             kind: FormFieldKind::ListBox,
             value: f.value(),
             checked: None,
-            options: option_labels(f.options()),
+            options,
+            selected_index,
             multiline: false,
             password: false,
             editable: false,
@@ -245,6 +266,7 @@ fn read_field(field: &PdfFormField) -> Option<FieldInfo> {
             value: None,
             checked: None,
             options: Vec::new(),
+            selected_index: None,
             multiline: false,
             password: false,
             editable: false,
@@ -255,11 +277,20 @@ fn read_field(field: &PdfFormField) -> Option<FieldInfo> {
     }
 }
 
-fn option_labels(options: &PdfFormFieldOptions) -> Vec<String> {
-    options
-        .iter()
-        .map(|o| o.label().cloned().unwrap_or_default())
-        .collect()
+/// Display labels plus the selected option's index. Selection identity must
+/// be the INDEX, not the label: `/Opt` arrays commonly pair export values
+/// with labels ("MI" / "Michigan"), so the field's `/V` need not equal any
+/// label, and labels may repeat.
+fn read_options(options: &PdfFormFieldOptions) -> (Vec<String>, Option<usize>) {
+    let mut labels = Vec::new();
+    let mut selected = None;
+    for (i, option) in options.iter().enumerate() {
+        if option.is_set() && selected.is_none() {
+            selected = Some(i);
+        }
+        labels.push(option.label().cloned().unwrap_or_default());
+    }
+    (labels, selected)
 }
 
 // ===========================================================================

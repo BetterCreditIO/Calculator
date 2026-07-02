@@ -189,12 +189,18 @@ export interface FormField {
   name: string | null;
   /** Widget bounds in display (top-left origin) point space. */
   bounds: Rect;
-  /** Current textual value (text / combo box / list box), if any. */
+  /**
+   * Current textual value (text / combo box / list box), if any. For choice
+   * fields this is the EXPORT value (`/V`), which need not equal any display
+   * label — selection identity travels via `selectedIndex`.
+   */
   value: string | null;
   /** Current checked state (checkbox / radio button), if any. */
   checked: boolean | null;
-  /** Choice options in PDF order (combo box / list box). */
+  /** Choice options in PDF order (combo box / list box), display labels. */
   options: string[];
+  /** Index of the currently selected option (combo box / list box). */
+  selectedIndex: number | null;
   readOnly: boolean;
   multiline: boolean;
   password: boolean;

@@ -6,6 +6,7 @@ import { useCallback } from "react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { useDocumentStore } from "@/stores/document-store";
 import { useAnnotationStore } from "@/stores/annotation-store";
+import { flushFormCommits } from "@/stores/form-store";
 import { saveDocument as saveDocumentCmd } from "@/lib/tauri";
 import { toast, useToastStore } from "@/hooks/use-toast";
 
@@ -44,6 +45,15 @@ export function useSaveDocument() {
       toast.error("Nothing to save", "Open a PDF first.");
       return;
     }
+    // A form field the user is still typing in commits on blur — and the
+    // native save dialog deactivates the window WITHOUT blurring, so blur
+    // explicitly, then wait for the enqueued fill(s) to reach the engine.
+    // Otherwise Ctrl+S would write a file missing the draft on screen.
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    await flushFormCommits();
+
     const { annotations, edits, stamps, markSaved } =
       useAnnotationStore.getState();
 

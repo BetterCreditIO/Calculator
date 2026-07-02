@@ -79,9 +79,9 @@ fn rotate_one(pdfium: &Pdfium, input: &str, degrees: i32, dir: &Path) -> PdfResu
     // failing the file outright.
     let pages = document.pages();
     for index in 0..pages.len() {
-        let mut page = pages
-            .get(index)
-            .map_err(|_| PdfError::PageOutOfRange(index as usize))?;
+        let mut page = pages.get(index).map_err(|_| {
+            PdfError::Pdfium(format!("page {} could not be read", index + 1))
+        })?;
         let next = rotation_degrees(&page) + degrees;
         page.set_rotation(rotation_from_degrees(next));
     }

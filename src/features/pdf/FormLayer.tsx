@@ -314,8 +314,10 @@ function ToggleWidget({ field, scale, highlight, interactive }: WidgetProps) {
 function ChoiceWidget({ field, scale, highlight, interactive }: WidgetProps) {
   const commit = useFormStore((s) => s.commit);
   const { style, frame } = widgetFrame(field, scale, highlight);
-  // Option identity is the index (labels may repeat in PDF choice fields).
-  const selectedIndex = field.value !== null ? field.options.indexOf(field.value) : -1;
+  // Selection identity is the backend-reported INDEX. Matching by label
+  // would break on the common `[export, label]` /Opt form ("MI" vs
+  // "Michigan") and on repeated labels.
+  const selectedIndex = field.selectedIndex ?? -1;
 
   async function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const optionIndex = Number(e.currentTarget.value);
@@ -349,11 +351,12 @@ function ChoiceWidget({ field, scale, highlight, interactive }: WidgetProps) {
           "absolute inset-0 h-full w-full appearance-none border-0 outline-none",
           // Transparent face: the raster shows the committed value; the
           // native dropdown list itself uses readable colors (set on the
-          // options). Every arrow-key change commits and repaints, so the
-          // current value stays visible while navigating by keyboard.
+          // options). Keyboard focus makes the face opaque so arrow-key
+          // navigation shows each selection instantly, without waiting for
+          // the commit round-trip and raster repaint.
           "bg-transparent text-transparent",
           interactive
-            ? "pointer-events-auto cursor-pointer hover:ring-2 hover:ring-primary/60 focus-visible:ring-2 focus-visible:ring-primary"
+            ? "pointer-events-auto cursor-pointer hover:ring-2 hover:ring-primary/60 focus-visible:ring-2 focus-visible:ring-primary focus-visible:bg-white focus-visible:text-slate-900"
             : "pointer-events-none",
         )}
       >

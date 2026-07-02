@@ -12,7 +12,7 @@
 import { create } from "zustand";
 import type { FormField, FormFieldValue } from "@/types/pdf";
 import { listFormFields, fillFormFields } from "@/lib/tauri";
-import { useDocumentStore } from "@/stores/document-store";
+import { useDocumentStore, onBeforePageOp } from "@/stores/document-store";
 import { useAnnotationStore } from "@/stores/annotation-store";
 import { toast } from "@/hooks/use-toast";
 
@@ -32,12 +32,16 @@ interface FormState {
   epoch: number;
   /** Whether field locations are visually highlighted on the page. */
   highlight: boolean;
-  /** True while a fill round-trip is in flight (serializes commits). */
-  committing: boolean;
 
   /** Enumerate the fields of the given document. */
   load: (docId: string) => Promise<void>;
   reset: () => void;
+  /**
+   * Discard the current fields and epoch SYNCHRONOUSLY. Runs before a page
+   * operation dispatches, so no widget stays interactive (and no queued
+   * commit stays valid) against indices that are about to shift.
+   */
+  invalidate: () => void;
   toggleHighlight: () => void;
 
   /**
@@ -88,13 +92,13 @@ export const useFormStore = create<FormState>((set, get) => ({
   status: "idle",
   epoch: 0,
   highlight: true,
-  committing: false,
 
   load: async (docId) => {
-    // Bump the epoch SYNCHRONOUSLY, before any await: the document (or its
-    // page structure) just changed, so any commit captured against the old
-    // field indices must be refused even while re-enumeration is in flight.
-    set((s) => ({ docId, status: "loading", epoch: s.epoch + 1 }));
+    // Bump the epoch and CLEAR the fields synchronously, before any await:
+    // the document (or its page structure) just changed, so stale widgets
+    // must neither render nor accept input while re-enumeration is in
+    // flight, and any commit captured against old indices must be refused.
+    set((s) => ({ docId, status: "loading", epoch: s.epoch + 1, fields: [] }));
     try {
       const fields = await listFormFields(docId);
       // Discard if another document was opened while we were fetching.
@@ -121,9 +125,11 @@ export const useFormStore = create<FormState>((set, get) => ({
       fields: [],
       docId: null,
       status: "idle",
-      committing: false,
       epoch: s.epoch + 1,
     })),
+
+  invalidate: () =>
+    set((s) => ({ fields: [], status: "loading", epoch: s.epoch + 1 })),
 
   toggleHighlight: () => set((s) => ({ highlight: !s.highlight })),
 
@@ -139,23 +145,18 @@ export const useFormStore = create<FormState>((set, get) => ({
           "The document changed while editing — please re-enter the value.",
         );
       }
-      set({ committing: true });
-      try {
-        const previous = get().fields;
-        const fields = await fillFormFields(docId, [value]);
-        // Discard if another document replaced this one mid-flight.
-        if (get().docId !== docId) return;
-        set({ fields });
-        // Repaint exactly the pages whose field state changed (a radio
-        // selection can clear a sibling on another page) and flag unsaved
-        // state so the Save affordances light up.
-        useDocumentStore
-          .getState()
-          .bumpPageRevisions(changedPages(previous, fields, value.pageIndex));
-        useAnnotationStore.getState().markDirty();
-      } finally {
-        if (get().docId === docId) set({ committing: false });
-      }
+      const previous = get().fields;
+      const fields = await fillFormFields(docId, [value]);
+      // Discard if the document (or its structure) changed mid-flight.
+      if (get().docId !== docId || get().epoch !== epochAtCall) return;
+      set({ fields, status: "ready" });
+      // Repaint exactly the pages whose field state changed (a radio
+      // selection can clear a sibling on another page) and flag unsaved
+      // state so the Save affordances light up.
+      useDocumentStore
+        .getState()
+        .bumpPageRevisions(changedPages(previous, fields, value.pageIndex));
+      useAnnotationStore.getState().markDirty();
     };
     // Chain behind the previous commit whether it succeeded or failed; each
     // caller observes only its own outcome.
@@ -164,3 +165,19 @@ export const useFormStore = create<FormState>((set, get) => ({
     return result;
   },
 }));
+
+/**
+ * Resolves once every commit enqueued so far has settled. The save flow
+ * awaits this (after blurring the focused field, which enqueues its draft)
+ * so a document is never written without the value the user just typed.
+ */
+export function flushFormCommits(): Promise<void> {
+  return commitTail.then(
+    () => undefined,
+    () => undefined,
+  );
+}
+
+// Structural page operations shift widget indices; invalidate BEFORE the op
+// is dispatched to the engine (see document-store's onBeforePageOp).
+onBeforePageOp(() => useFormStore.getState().invalidate());

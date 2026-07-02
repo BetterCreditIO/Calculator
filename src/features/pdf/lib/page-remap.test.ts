@@ -139,37 +139,47 @@ describe("remapStamps", () => {
     expect(out[1]!.id).toBe("s2");
   });
 
-  it("preserves aspect ratio when the page rotates", () => {
-    const [out] = remapStamps([stamp(0)], {
-      kind: "rotate",
-      pageIndex: 0,
-      clockwise: true,
-      displayWidth: 612,
-      displayHeight: 792,
-    });
-    // The image must never distort: same width/height ratio as before.
-    expect(out!.rect.width / out!.rect.height).toBeCloseTo(160 / 80, 5);
-    // And it stays inside the rotated anchor box (which has swapped sides).
-    const box = rotateRect(
-      { x: 100, y: 200, width: 160, height: 80 },
-      true,
-      612,
-      792,
-    );
-    expect(out!.rect.x).toBeGreaterThanOrEqual(box.x);
-    expect(out!.rect.y).toBeGreaterThanOrEqual(box.y);
-    expect(out!.rect.x + out!.rect.width).toBeLessThanOrEqual(
-      box.x + box.width + 1e-6,
-    );
-    expect(out!.rect.y + out!.rect.height).toBeLessThanOrEqual(
-      box.y + box.height + 1e-6,
-    );
-    // Centered within the box.
-    expect(out!.rect.x - box.x).toBeCloseTo(
-      box.x + box.width - (out!.rect.x + out!.rect.width),
-      5,
-    );
-  });
+  it.each([true, false])(
+    "preserves aspect ratio when the page rotates (clockwise: %s)",
+    (clockwise) => {
+      const [out] = remapStamps([stamp(0)], {
+        kind: "rotate",
+        pageIndex: 0,
+        clockwise,
+        displayWidth: 612,
+        displayHeight: 792,
+      });
+      // The image must never distort: same width/height ratio as before.
+      expect(out!.rect.width / out!.rect.height).toBeCloseTo(160 / 80, 5);
+      // And it stays inside the rotated anchor box (which has swapped sides).
+      const box = rotateRect(
+        { x: 100, y: 200, width: 160, height: 80 },
+        clockwise,
+        612,
+        792,
+      );
+      expect(out!.rect.x).toBeGreaterThanOrEqual(box.x);
+      expect(out!.rect.y).toBeGreaterThanOrEqual(box.y);
+      expect(out!.rect.x + out!.rect.width).toBeLessThanOrEqual(
+        box.x + box.width + 1e-6,
+      );
+      expect(out!.rect.y + out!.rect.height).toBeLessThanOrEqual(
+        box.y + box.height + 1e-6,
+      );
+      // Centered on BOTH axes: equal margins left/right and top/bottom.
+      // (For this fixture the box is 80×160 and the fitted stamp 80×40, so
+      // the y-margins are the meaningful ones — 60pt each.)
+      expect(out!.rect.x - box.x).toBeCloseTo(
+        box.x + box.width - (out!.rect.x + out!.rect.width),
+        5,
+      );
+      expect(out!.rect.y - box.y).toBeCloseTo(
+        box.y + box.height - (out!.rect.y + out!.rect.height),
+        5,
+      );
+      expect(out!.rect.y - box.y).toBeCloseTo(60, 5);
+    },
+  );
 
   it("leaves stamps on other pages untouched by a rotation", () => {
     const [out] = remapStamps([stamp(2)], {

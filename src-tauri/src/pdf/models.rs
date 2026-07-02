@@ -181,12 +181,16 @@ pub struct FormField {
     pub name: Option<String>,
     /// Widget bounds in display (top-left origin) point space.
     pub bounds: Rect,
-    /// Current textual value (text / combo box / list box), if any.
+    /// Current textual value (text / combo box / list box), if any. For
+    /// choice fields this is the EXPORT value (`/V`), which need not equal
+    /// any display label — selection identity travels via `selected_index`.
     pub value: Option<String>,
     /// Current checked state (checkbox / radio button), if any.
     pub checked: Option<bool>,
-    /// Choice options in PDF order (combo box / list box).
+    /// Choice options in PDF order (combo box / list box), display labels.
     pub options: Vec<String>,
+    /// Index of the currently selected option (combo box / list box).
+    pub selected_index: Option<usize>,
     pub read_only: bool,
     pub multiline: bool,
     pub password: bool,
