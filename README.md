@@ -40,6 +40,15 @@ that feels trustworthy and works without jank.
   automatic OCR text layer (Windows built-in engine, fully offline) — select,
   search, and edit them like any other page, with ink color sampled from the
   pixels for faithful re-stamping
+- Interactive form filling (AcroForm): text fields, checkboxes, radio groups,
+  and choice lists filled through PDFium's own form machinery, so appearance
+  streams regenerate with the field's authored font and saved files read
+  correctly in Adobe, Chrome, and print — the essentials for 1003s and
+  disclosures
+- Signatures: draw or type a signature, click to place it, drag/resize to
+  adjust — embedded into the saved PDF as a real image object
+- Batch operations: rotate whole folders of PDFs into safe copies, or merge
+  many files into one packet in a chosen order (originals never modified)
 - Page-thumbnail sidebar (HiDPI-sharp), full-text search with on-page hit
   highlighting, cursor-anchored Ctrl+wheel zoom, fit-width / fit-page
 - Undo/redo, keyboard shortcuts, dark & light themes
@@ -50,7 +59,8 @@ that feels trustworthy and works without jank.
   Lake, Will, Kane, McHenry, or statewide), estimated homeowners insurance, PMI,
   and HOA → total monthly housing cost
 - Donut breakdown chart + year-by-year amortization schedule
-- Save/compare scenarios and export an estimate report
+- Save/compare scenarios and export the estimate as a styled Word document
+  (.docx), an Excel-ready CSV, or a text report
 
 ## Tech stack
 

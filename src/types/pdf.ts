@@ -153,6 +153,67 @@ export interface Annotation {
 }
 
 /**
+ * A placed signature (or other image) stamp. Lives in the session like an
+ * annotation — movable, resizable, undoable — and is baked into the page as a
+ * real image XObject on save.
+ */
+export interface ImageStamp {
+  id: string;
+  pageIndex: number;
+  /** Placement in display (top-left origin) point space. */
+  rect: Rect;
+  /** PNG bytes, base64-encoded (no `data:` prefix). Transparent background. */
+  pngBase64: string;
+}
+
+/** Kinds of interactive AcroForm field widgets surfaced by the backend. */
+export type FormFieldKind =
+  | "text"
+  | "checkbox"
+  | "radioButton"
+  | "comboBox"
+  | "listBox"
+  | "signature";
+
+/**
+ * One interactive form-field widget on a page. Identity is positional —
+ * `(pageIndex, annotIndex)` names the widget annotation within its page — and
+ * stays stable across re-parses of the same document bytes.
+ */
+export interface FormField {
+  pageIndex: number;
+  /** Index of the widget annotation within its page's annotation array. */
+  annotIndex: number;
+  kind: FormFieldKind;
+  /** Fully-qualified field name (widgets of one radio group share a name). */
+  name: string | null;
+  /** Widget bounds in display (top-left origin) point space. */
+  bounds: Rect;
+  /** Current textual value (text / combo box / list box), if any. */
+  value: string | null;
+  /** Current checked state (checkbox / radio button), if any. */
+  checked: boolean | null;
+  /** Choice options in PDF order (combo box / list box). */
+  options: string[];
+  readOnly: boolean;
+  multiline: boolean;
+  password: boolean;
+  /** Whether the combo box also accepts free text (an "editable" combo). */
+  editable: boolean;
+}
+
+/**
+ * A single form-field mutation. Mirrors the Rust `FormFieldValue` enum (serde
+ * internally-tagged with camelCase variants). Applied through pdfium's
+ * form-fill machinery so widget appearance streams regenerate correctly.
+ */
+export type FormFieldValue =
+  | { kind: "text"; pageIndex: number; annotIndex: number; value: string }
+  | { kind: "checkbox"; pageIndex: number; annotIndex: number; checked: boolean }
+  | { kind: "radio"; pageIndex: number; annotIndex: number }
+  | { kind: "choice"; pageIndex: number; annotIndex: number; optionIndex: number };
+
+/**
  * A pending in-place text edit. The original span is recorded so the backend
  * can redact it and re-stamp the replacement text at the same geometry on save.
  */

@@ -33,15 +33,17 @@ use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread::JoinHandle;
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use parking_lot::Mutex;
 use pdfium_render::prelude::*;
 
 use crate::error::{PdfError, PdfResult};
 use crate::pdf::models::{
-    Annotation, AnnotationType, DocumentMeta, PageOp, PageSize, PageTextLayer, Rect, SearchHit,
-    TextEdit, TextSpan,
+    Annotation, AnnotationType, BatchOp, BatchReport, DocumentMeta, FormField, FormFieldValue,
+    ImageStamp, PageOp, PageSize, PageTextLayer, Rect, SearchHit, TextEdit, TextSpan,
 };
 use crate::pdf::ocr::{self, OcrWordBox};
+use crate::pdf::{batch, forms};
 
 /// A document held open by the engine. The raw bytes are the SOURCE OF TRUTH:
 /// structural page operations replace them in place (persisted to disk only on
@@ -94,12 +96,27 @@ enum EngineRequest {
         output_path: String,
         edits: Vec<TextEdit>,
         annotations: Vec<Annotation>,
+        stamps: Vec<ImageStamp>,
         reply: Sender<PdfResult<()>>,
     },
     Transform {
         id: String,
         op: PageOp,
         reply: Sender<PdfResult<DocumentMeta>>,
+    },
+    ListFormFields {
+        id: String,
+        reply: Sender<PdfResult<Vec<FormField>>>,
+    },
+    FillFormFields {
+        id: String,
+        values: Vec<FormFieldValue>,
+        reply: Sender<PdfResult<Vec<FormField>>>,
+    },
+    Batch {
+        inputs: Vec<String>,
+        op: BatchOp,
+        reply: Sender<PdfResult<BatchReport>>,
     },
 }
 
@@ -190,18 +207,36 @@ impl PdfEngine {
         output_path: String,
         edits: Vec<TextEdit>,
         annotations: Vec<Annotation>,
+        stamps: Vec<ImageStamp>,
     ) -> PdfResult<()> {
         self.dispatch(|reply| EngineRequest::Save {
             id,
             output_path,
             edits,
             annotations,
+            stamps,
             reply,
         })
     }
 
     pub fn transform(&self, id: String, op: PageOp) -> PdfResult<DocumentMeta> {
         self.dispatch(|reply| EngineRequest::Transform { id, op, reply })
+    }
+
+    pub fn list_form_fields(&self, id: String) -> PdfResult<Vec<FormField>> {
+        self.dispatch(|reply| EngineRequest::ListFormFields { id, reply })
+    }
+
+    pub fn fill_form_fields(
+        &self,
+        id: String,
+        values: Vec<FormFieldValue>,
+    ) -> PdfResult<Vec<FormField>> {
+        self.dispatch(|reply| EngineRequest::FillFormFields { id, values, reply })
+    }
+
+    pub fn batch(&self, inputs: Vec<String>, op: BatchOp) -> PdfResult<BatchReport> {
+        self.dispatch(|reply| EngineRequest::Batch { inputs, op, reply })
     }
 }
 
@@ -310,12 +345,20 @@ fn run_worker(rx: Receiver<EngineRequest>, lib_dir: Option<PathBuf>) {
                 output_path,
                 edits,
                 annotations,
+                stamps,
                 reply,
             } => {
                 let result = guard(|| {
                     with_pdfium(&pdfium, |pdfium| {
                         let doc = docs.get(&id).ok_or(PdfError::DocumentNotFound)?;
-                        save_document(pdfium, &doc.bytes, &output_path, &edits, &annotations)
+                        save_document(
+                            pdfium,
+                            &doc.bytes,
+                            &output_path,
+                            &edits,
+                            &annotations,
+                            &stamps,
+                        )
                     })
                 });
                 let _ = reply.send(result);
@@ -333,6 +376,41 @@ fn run_worker(rx: Receiver<EngineRequest>, lib_dir: Option<PathBuf>) {
                         }
                         build_meta(pdfium, &id, &doc.bytes, doc.path.clone(), &doc.name)
                     })
+                });
+                let _ = reply.send(result);
+            }
+            EngineRequest::ListFormFields { id, reply } => {
+                let result = guard(|| {
+                    with_pdfium(&pdfium, |pdfium| {
+                        let doc = docs.get(&id).ok_or(PdfError::DocumentNotFound)?;
+                        forms::list_form_fields(pdfium, &doc.bytes)
+                    })
+                });
+                let _ = reply.send(result);
+            }
+            EngineRequest::FillFormFields { id, values, reply } => {
+                let result = guard(|| {
+                    with_pdfium(&pdfium, |pdfium| {
+                        let doc = docs.get_mut(&id).ok_or(PdfError::DocumentNotFound)?;
+                        // The filled bytes become the new source of truth, so
+                        // renders/saves reflect the values immediately. A
+                        // failed fill leaves the original bytes untouched.
+                        let filled = forms::fill_form_fields(pdfium, &doc.bytes, &values)?;
+                        doc.bytes = filled;
+                        // Invariant: cached OCR layers never outlive a bytes
+                        // change (see LoadedDoc).
+                        doc.ocr_layers.clear();
+                        // Return the authoritative post-fill field state (a
+                        // radio selection clears its group siblings, pdfium
+                        // may truncate to MaxLen, etc.).
+                        forms::list_form_fields(pdfium, &doc.bytes)
+                    })
+                });
+                let _ = reply.send(result);
+            }
+            EngineRequest::Batch { inputs, op, reply } => {
+                let result = guard(|| {
+                    with_pdfium(&pdfium, |pdfium| batch::run_batch(pdfium, &inputs, &op))
                 });
                 let _ = reply.send(result);
             }
@@ -451,7 +529,7 @@ fn metadata_value(meta: &PdfMetadata, tag: PdfDocumentMetadataTagType) -> Option
         .filter(|s| !s.trim().is_empty())
 }
 
-fn rotation_degrees(page: &PdfPage) -> i32 {
+pub(crate) fn rotation_degrees(page: &PdfPage) -> i32 {
     match page.rotation() {
         Ok(PdfPageRenderRotation::Degrees90) => 90,
         Ok(PdfPageRenderRotation::Degrees180) => 180,
@@ -816,7 +894,7 @@ fn estimate_ink_color(
 /// site maps page→display and every save site maps display→page, making the
 /// text overlay and all edits correct on rotated pages.
 #[derive(Debug, Clone, Copy)]
-struct PageGeometry {
+pub(crate) struct PageGeometry {
     /// Intrinsic clockwise display rotation: 0, 90, 180 or 270.
     rotation: i32,
     /// UNROTATED page dimensions in points.
@@ -825,7 +903,7 @@ struct PageGeometry {
 }
 
 impl PageGeometry {
-    fn from_page(page: &PdfPage) -> Self {
+    pub(crate) fn from_page(page: &PdfPage) -> Self {
         let rotation = rotation_degrees(page);
         let display_w = page.width().value;
         let display_h = page.height().value;
@@ -863,7 +941,7 @@ impl PageGeometry {
     }
 
     /// Pdfium rect (page space) → display rect.
-    fn rect_to_display(&self, r: &PdfRect) -> Rect {
+    pub(crate) fn rect_to_display(&self, r: &PdfRect) -> Rect {
         let (x0, y0) = self.page_to_display(r.left().value, r.bottom().value);
         let (x1, y1) = self.page_to_display(r.right().value, r.top().value);
         Rect {
@@ -1244,6 +1322,7 @@ fn save_document(
     output_path: &str,
     edits: &[TextEdit],
     annotations: &[Annotation],
+    stamps: &[ImageStamp],
 ) -> PdfResult<()> {
     let mut document = pdfium.load_pdf_from_byte_slice(bytes, None)?;
 
@@ -1264,7 +1343,62 @@ fn save_document(
         apply_page_edits(&mut document, page_index, &page_edits)?;
     }
 
+    for stamp in stamps {
+        apply_image_stamp(&mut document, stamp)?;
+    }
+
     document.save_to_file(output_path)?;
+    Ok(())
+}
+
+/// Bake one image stamp (a placed signature) into its page as a real image
+/// XObject. The stamp's display rect is mapped into unrotated page space and
+/// the object's matrix pre-rotates the image so it reads upright regardless
+/// of the page's display rotation — the same convention text re-stamping
+/// uses (see [`PageGeometry::upright_text_matrix`]).
+fn apply_image_stamp(document: &mut PdfDocument, stamp: &ImageStamp) -> PdfResult<()> {
+    let png = STANDARD
+        .decode(stamp.png_base64.as_bytes())
+        .map_err(|e| PdfError::InvalidOperation(format!("invalid signature image data: {e}")))?;
+    let image = image::load_from_memory(&png)
+        .map_err(|e| PdfError::InvalidOperation(format!("unreadable signature image: {e}")))?;
+
+    let pages = document.pages();
+    let mut page = pages
+        .get(stamp.page_index as i32)
+        .map_err(|_| PdfError::PageOutOfRange(stamp.page_index))?;
+
+    let geometry = PageGeometry::from_page(&page);
+    // Page-space axis-aligned box the stamp must occupy.
+    let target = geometry.rect_to_page(&stamp.rect);
+    let (px, py) = (target.left().value, target.bottom().value);
+    // Display-space dimensions drive the scale; rotation maps them onto the
+    // page-space box (whose sides swap for 90°/270°).
+    let (dw, dh) = (stamp.rect.width, stamp.rect.height);
+
+    // M = T · R(rotation CCW) · S(dw, dh) applied to the image's unit square.
+    // The translation picks the corner of the page-space box that the rotated
+    // unit square's origin lands on.
+    let (a, b, c, d, e, f) = match geometry.rotation {
+        90 => (0.0, dw, -dh, 0.0, px + dh, py),
+        180 => (-dw, 0.0, 0.0, -dh, px + dw, py + dh),
+        270 => (0.0, -dw, dh, 0.0, px, py + dw),
+        _ => (dw, 0.0, 0.0, dh, px, py),
+    };
+
+    let mut object = page.objects_mut().create_image_object(
+        PdfPoints::ZERO,
+        PdfPoints::ZERO,
+        &image,
+        None,
+        None,
+    )?;
+    // A freshly created image object carries the identity matrix (no scale
+    // was requested above), so applying M yields exactly M.
+    object
+        .apply_matrix(PdfMatrix::new(a, b, c, d, e, f))
+        .map_err(PdfError::from)?;
+    page.regenerate_content()?;
     Ok(())
 }
 
@@ -1400,7 +1534,7 @@ fn apply_page_op(pdfium: &Pdfium, bytes: &[u8], op: &PageOp) -> PdfResult<Option
     }
 }
 
-fn rotation_from_degrees(degrees: i32) -> PdfPageRenderRotation {
+pub(crate) fn rotation_from_degrees(degrees: i32) -> PdfPageRenderRotation {
     match degrees.rem_euclid(360) {
         90 => PdfPageRenderRotation::Degrees90,
         180 => PdfPageRenderRotation::Degrees180,

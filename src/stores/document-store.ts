@@ -48,6 +48,16 @@ interface DocumentState {
   /** Cached text layers by page index (lazily fetched). */
   textLayers: Record<number, PageTextLayer | undefined>;
 
+  /**
+   * Per-page repaint counters, bumped when the engine's in-memory document
+   * bytes change WITHOUT the page structure changing (e.g. a form-field
+   * fill). Page components include their own page's counter in their
+   * raster-fetch dependencies, so only the affected pages repaint while text
+   * layers and scroll state stay untouched.
+   */
+  pageRevisions: Record<number, number>;
+  bumpPageRevisions: (pageIndexes: number[]) => void;
+
   /** Whether the one-time "recognized with OCR" notice was shown for this doc. */
   ocrNoticeShown: boolean;
 
@@ -90,6 +100,13 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   fitMode: "width",
   pendingScrollPage: null,
   textLayers: {},
+  pageRevisions: {},
+  bumpPageRevisions: (pageIndexes) =>
+    set((s) => {
+      const next = { ...s.pageRevisions };
+      for (const i of pageIndexes) next[i] = (next[i] ?? 0) + 1;
+      return { pageRevisions: next };
+    }),
   ocrNoticeShown: false,
   activeSearchHit: null,
   setActiveSearchHit: (activeSearchHit) => set({ activeSearchHit }),
@@ -118,6 +135,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       currentPage: 0,
       pendingScrollPage: null,
       textLayers: {},
+      pageRevisions: {},
       activeSearchHit: null,
     });
   },
@@ -207,6 +225,7 @@ async function loadDocument(
     status: "loading",
     error: null,
     textLayers: {},
+    pageRevisions: {},
     activeSearchHit: null,
     ocrNoticeShown: false,
   });

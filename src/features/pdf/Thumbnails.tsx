@@ -110,6 +110,7 @@ function Thumbnail({
   onClick: () => void;
 }) {
   const meta = useDocumentStore((s) => s.meta);
+  const revision = useDocumentStore((s) => s.pageRevisions[size.pageIndex] ?? 0);
   const [ref, inView] = useInView<HTMLButtonElement>("400px");
   const [url, setUrl] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -137,7 +138,9 @@ function Thumbnail({
     return () => {
       cancelled = true;
     };
-  }, [meta, inView, size.pageIndex, thumbScale]);
+    // `revision` bumps when the in-memory document changes without a page
+    // restructure (form fills), so tiles repaint with the new content.
+  }, [meta, inView, size.pageIndex, thumbScale, revision]);
 
   return (
     <div

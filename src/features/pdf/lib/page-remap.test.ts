@@ -4,9 +4,10 @@ import {
   rotateRect,
   remapAnnotations,
   remapEdits,
+  remapStamps,
   type PageRemap,
 } from "./page-remap";
-import type { Annotation, TextEdit } from "@/types/pdf";
+import type { Annotation, ImageStamp, TextEdit } from "@/types/pdf";
 
 describe("remapPageIndex", () => {
   it("shifts indices down after a delete and drops the deleted page", () => {
@@ -118,5 +119,66 @@ describe("remapAnnotations / remapEdits", () => {
       width: 50,
       height: 100,
     });
+  });
+});
+
+describe("remapStamps", () => {
+  const stamp = (pageIndex: number): ImageStamp => ({
+    id: `s${pageIndex}`,
+    pageIndex,
+    rect: { x: 100, y: 200, width: 160, height: 80 },
+    pngBase64: "iVBORw0KGgo=",
+  });
+
+  it("drops stamps on a deleted page and shifts the rest", () => {
+    const out = remapStamps([stamp(0), stamp(1), stamp(2)], {
+      kind: "delete",
+      pageIndex: 1,
+    });
+    expect(out.map((s) => s.pageIndex)).toEqual([0, 1]);
+    expect(out[1]!.id).toBe("s2");
+  });
+
+  it("preserves aspect ratio when the page rotates", () => {
+    const [out] = remapStamps([stamp(0)], {
+      kind: "rotate",
+      pageIndex: 0,
+      clockwise: true,
+      displayWidth: 612,
+      displayHeight: 792,
+    });
+    // The image must never distort: same width/height ratio as before.
+    expect(out!.rect.width / out!.rect.height).toBeCloseTo(160 / 80, 5);
+    // And it stays inside the rotated anchor box (which has swapped sides).
+    const box = rotateRect(
+      { x: 100, y: 200, width: 160, height: 80 },
+      true,
+      612,
+      792,
+    );
+    expect(out!.rect.x).toBeGreaterThanOrEqual(box.x);
+    expect(out!.rect.y).toBeGreaterThanOrEqual(box.y);
+    expect(out!.rect.x + out!.rect.width).toBeLessThanOrEqual(
+      box.x + box.width + 1e-6,
+    );
+    expect(out!.rect.y + out!.rect.height).toBeLessThanOrEqual(
+      box.y + box.height + 1e-6,
+    );
+    // Centered within the box.
+    expect(out!.rect.x - box.x).toBeCloseTo(
+      box.x + box.width - (out!.rect.x + out!.rect.width),
+      5,
+    );
+  });
+
+  it("leaves stamps on other pages untouched by a rotation", () => {
+    const [out] = remapStamps([stamp(2)], {
+      kind: "rotate",
+      pageIndex: 0,
+      clockwise: false,
+      displayWidth: 612,
+      displayHeight: 792,
+    });
+    expect(out!.rect).toEqual({ x: 100, y: 200, width: 160, height: 80 });
   });
 });

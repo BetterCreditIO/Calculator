@@ -6,10 +6,12 @@ import {
   RefreshCw,
   Info,
   FileText,
+  Layers,
 } from "lucide-react";
 import { useUiStore } from "@/stores/ui-store";
 import { useDocumentStore } from "@/stores/document-store";
 import { useOpenDocument } from "@/features/pdf/use-pdf-actions";
+import { BatchDialog } from "@/features/pdf/BatchDialog";
 import { checkForUpdates } from "@/hooks/use-updater";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "./ThemeToggle";
@@ -36,6 +38,7 @@ export function TopBar() {
   const toggleCalculator = useUiStore((s) => s.toggleCalculator);
   const openDocument = useOpenDocument();
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [batchOpen, setBatchOpen] = useState(false);
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-3 border-b bg-card px-3">
@@ -84,6 +87,11 @@ export function TopBar() {
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
+          <DropdownMenuItem onClick={() => setBatchOpen(true)}>
+            <Layers className="h-4 w-4" />
+            Batch operations…
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
           <DropdownMenuItem onClick={() => checkForUpdates()}>
             <RefreshCw className="h-4 w-4" />
             Check for updates
@@ -95,6 +103,8 @@ export function TopBar() {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      <BatchDialog open={batchOpen} onOpenChange={setBatchOpen} />
 
       <Dialog open={aboutOpen} onOpenChange={setAboutOpen}>
         <DialogContent>

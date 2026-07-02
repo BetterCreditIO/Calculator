@@ -17,6 +17,8 @@ import { renderPage } from "@/lib/tauri";
 import { useInView } from "@/hooks/use-in-view";
 import { TextLayer } from "./TextLayer";
 import { AnnotationLayer } from "./AnnotationLayer";
+import { FormLayer } from "./FormLayer";
+import { SignatureLayer } from "./SignatureLayer";
 import { cn, uid } from "@/lib/utils";
 
 interface PdfPageProps {
@@ -29,12 +31,16 @@ const TEXT_MARKUP_TOOLS: Tool[] = ["highlight", "underline", "strikethrough"];
 export function PdfPage({ size, scale }: PdfPageProps) {
   const [containerRef, inView] = useInView<HTMLDivElement>("1000px");
   const meta = useDocumentStore((s) => s.meta);
+  const revision = useDocumentStore((s) => s.pageRevisions[size.pageIndex] ?? 0);
   const ensureTextLayer = useDocumentStore((s) => s.ensureTextLayer);
   const textLayer = useDocumentStore((s) => s.textLayers[size.pageIndex]);
 
   const activeTool = useUiStore((s) => s.activeTool);
   const markupColor = useUiStore((s) => s.markupColor);
+  const pendingSignature = useUiStore((s) => s.pendingSignature);
+  const setPendingSignature = useUiStore((s) => s.setPendingSignature);
   const addAnnotation = useAnnotationStore((s) => s.addAnnotation);
+  const addStamp = useAnnotationStore((s) => s.addStamp);
 
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -80,7 +86,9 @@ export function PdfPage({ size, scale }: PdfPageProps) {
     return () => {
       cancelled = true;
     };
-  }, [meta, inView, rasterScale, size.pageIndex]);
+    // `revision` bumps when this page's content changes in place (form
+    // fills) so the raster repaints without disturbing other pages.
+  }, [meta, inView, rasterScale, size.pageIndex, revision]);
 
   // Lazily load the text layer for selection / editing.
   useEffect(() => {
@@ -121,6 +129,30 @@ export function PdfPage({ size, scale }: PdfPageProps) {
       createdAt: new Date().toISOString(),
     });
     sel.removeAllRanges();
+  }
+
+  /** Place the pending signature centered on the click point. */
+  function handlePlaceSignature(e: React.MouseEvent<HTMLDivElement>) {
+    if (!pendingSignature) return;
+    const box = e.currentTarget.getBoundingClientRect();
+    const px = (e.clientX - box.left) / scale;
+    const py = (e.clientY - box.top) / scale;
+    // Sensible default size: ~a third of the page width, aspect preserved.
+    const width = Math.min(160, size.width * 0.35);
+    const height = width / pendingSignature.aspect;
+    const rect = {
+      x: Math.min(Math.max(0, px - width / 2), Math.max(0, size.width - width)),
+      y: Math.min(Math.max(0, py - height / 2), Math.max(0, size.height - height)),
+      width,
+      height,
+    };
+    addStamp({
+      id: uid("stamp"),
+      pageIndex: size.pageIndex,
+      rect,
+      pngBase64: pendingSignature.pngBase64,
+    });
+    setPendingSignature(null);
   }
 
   return (
@@ -171,6 +203,17 @@ export function PdfPage({ size, scale }: PdfPageProps) {
         widthPx={widthPx}
         heightPx={heightPx}
       />
+      <FormLayer pageIndex={size.pageIndex} scale={scale} />
+      <SignatureLayer size={size} scale={scale} />
+
+      {/* Signature placement mode: catch the next click anywhere on a page. */}
+      {pendingSignature && (
+        <div
+          className="absolute inset-0 z-30 cursor-crosshair"
+          onClick={handlePlaceSignature}
+          title="Click to place your signature (Esc to cancel)"
+        />
+      )}
 
       {/* Page number chip */}
       <div className="pointer-events-none absolute bottom-2 right-2 rounded-md bg-black/55 px-1.5 py-0.5 text-[10px] font-medium text-white opacity-0 transition-opacity duration-200 group-hover:opacity-100">

@@ -99,6 +99,13 @@ export function useKeyboardShortcuts() {
         }
       }
 
+      // Escape cancels signature-placement mode.
+      if (e.key === "Escape" && ui.pendingSignature) {
+        e.preventDefault();
+        ui.setPendingSignature(null);
+        return;
+      }
+
       // ---- Single-key tool shortcuts (not while typing) ----
       if (isTypingTarget(e.target)) return;
       const tool = TOOL_KEYS[e.key.toLowerCase()];

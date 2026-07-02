@@ -44,7 +44,8 @@ export function useSaveDocument() {
       toast.error("Nothing to save", "Open a PDF first.");
       return;
     }
-    const { annotations, edits, markSaved } = useAnnotationStore.getState();
+    const { annotations, edits, stamps, markSaved } =
+      useAnnotationStore.getState();
 
     try {
       const suggested = suggestSaveName(meta.path, meta.title);
@@ -56,7 +57,13 @@ export function useSaveDocument() {
       if (!outputPath) return; // cancelled
 
       const savingId = toast.show("Saving…", "Applying edits and markup.");
-      await saveDocumentCmd({ id: meta.id, outputPath, edits, annotations });
+      await saveDocumentCmd({
+        id: meta.id,
+        outputPath,
+        edits,
+        annotations,
+        stamps,
+      });
       useToastStore.getState().dismiss(savingId);
       markSaved();
       toast.success("Saved", `Wrote ${baseName(outputPath)}.`);

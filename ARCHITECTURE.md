@@ -364,7 +364,41 @@ operations change the document. The UI shows a one-time notice and an "OCR"
 chip in the status bar; edits on recognized text flow through the standard
 Tier-2 matched-font re-stamp.
 
-## 17. Known limitations & future work
+## 17. Interactive forms, signatures & batch
+
+**Form filling (`src-tauri/src/pdf/forms.rs`).** Enumeration walks each page's
+widget annotations through the safe wrapper and emits one `FormField` per
+widget, with bounds in display space; checkbox/radio checked-state and choice
+values are then re-read through the raw form API (`FPDFAnnot_IsChecked`,
+`FPDFAnnot_GetFormFieldValue`), because the wrapper's helpers assume a literal
+`/Yes` on-state and misreport unselected radio groups. Filling deliberately
+does NOT write `/V` into dictionaries (that leaves appearance streams stale —
+Adobe/Chrome/print would show the old value); instead it drives PDFium's own
+form-fill machinery over the raw `FORM_*` bindings — the same event path a
+click or keystroke takes in Chrome: focus the widget, replace its text (or
+click its center), kill focus. PDFium then regenerates the widget's appearance
+stream with the field's authored font/size/alignment and uses the group's real
+export values. The UI (`FormLayer.tsx`) keeps PDFium as the source of truth for
+how a field *looks*: unfocused text inputs are transparent (the raster shows
+the value); focus turns them into ordinary inputs. Commits are queued per
+field and epoch-guarded so a page operation can never apply a value to
+shifted widget indices. Fills mutate the engine's cached bytes; per-page
+revision counters repaint only affected pages.
+
+**Signatures (`SignatureDialog.tsx`, `SignatureLayer.tsx`,
+`engine.rs::apply_image_stamp`).** Draw (pointer + midpoint smoothing) or type
+(script font) produces a trimmed transparent PNG; placement/drag/resize live
+in the annotation store (undo/redo, page-remap aware — rotations re-fit the
+image, aspect preserved). On save each stamp becomes a real image XObject,
+positioned with a rotation-aware matrix so it reads upright on rotated pages.
+
+**Batch (`src-tauri/src/pdf/batch.rs`, `BatchDialog.tsx`).** Rotate writes a
+" (rotated)" copy of every input into a chosen folder (never overwrites,
+per-file failures reported, partially-processed outputs never written); merge
+concatenates inputs in list order into one packet and fails fast, naming the
+offending file.
+
+## 18. Known limitations & future work
 
 - Tier-2 edits substitute the closest standard-14 font when the original
   (typically a subsetted embed) can't safely render the new characters (§5.4).
@@ -384,4 +418,9 @@ Tier-2 matched-font re-stamp.
 - Page operations are immediate (confirmed for delete) and clear the
   markup undo history; ops themselves are not undoable until Save-as keeps the
   original file intact.
+- Form fills commit into the engine's document bytes and are not part of the
+  markup undo stack (re-edit the field to change it); signature fields are
+  surfaced but cryptographic signing (PKCS#7) is future work.
+- Choice fields support single selection; multi-select list boxes apply one
+  index at a time.
 ```

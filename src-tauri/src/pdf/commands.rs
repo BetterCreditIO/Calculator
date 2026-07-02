@@ -14,7 +14,10 @@ use uuid::Uuid;
 
 use crate::error::{PdfError, PdfResult};
 use crate::pdf::engine::PdfEngine;
-use crate::pdf::models::{Annotation, DocumentMeta, PageOp, PageTextLayer, SearchHit, TextEdit};
+use crate::pdf::models::{
+    Annotation, BatchOp, BatchReport, DocumentMeta, FormField, FormFieldValue, ImageStamp, PageOp,
+    PageTextLayer, SearchHit, TextEdit,
+};
 
 /// Derive a friendly display name from a file path.
 fn file_stem_name(path: &str) -> String {
@@ -101,6 +104,38 @@ pub fn transform_pages(
     engine.transform(id, op)
 }
 
+/// List the document's interactive form-field widgets (empty when the PDF has
+/// no AcroForm).
+#[tauri::command]
+pub fn list_form_fields(engine: State<'_, PdfEngine>, id: String) -> PdfResult<Vec<FormField>> {
+    engine.list_form_fields(id)
+}
+
+/// Apply form-field values through pdfium's form-fill machinery (regenerating
+/// widget appearance streams) and return the authoritative post-fill field
+/// state. Mutations live in memory until the user saves.
+#[tauri::command]
+pub fn fill_form_fields(
+    engine: State<'_, PdfEngine>,
+    id: String,
+    values: Vec<FormFieldValue>,
+) -> PdfResult<Vec<FormField>> {
+    log::info!("Filling {} form field(s)", values.len());
+    engine.fill_form_fields(id, values)
+}
+
+/// Run a batch operation (rotate copies / merge into one) across many PDF
+/// files chosen through the native dialogs. Never overwrites existing files.
+#[tauri::command]
+pub fn batch_process(
+    engine: State<'_, PdfEngine>,
+    inputs: Vec<String>,
+    op: BatchOp,
+) -> PdfResult<BatchReport> {
+    log::info!("Batch {:?} over {} file(s)", op, inputs.len());
+    engine.batch(inputs, op)
+}
+
 /// Write a UTF-8 text file (used by the mortgage-estimate export). The path is
 /// chosen by the user via the native save dialog, so this is the same trusted
 /// flow as saving a PDF.
@@ -119,7 +154,8 @@ pub fn write_binary_file(path: String, contents_base64: String) -> PdfResult<()>
     std::fs::write(&path, bytes).map_err(PdfError::from)
 }
 
-/// Apply pending edits + annotations and save to a new PDF at `output_path`.
+/// Apply pending edits, annotations, and signature stamps, then save to a new
+/// PDF at `output_path`.
 #[tauri::command]
 pub fn save_document(
     engine: State<'_, PdfEngine>,
@@ -127,12 +163,14 @@ pub fn save_document(
     output_path: String,
     edits: Vec<TextEdit>,
     annotations: Vec<Annotation>,
+    stamps: Vec<ImageStamp>,
 ) -> PdfResult<()> {
     log::info!(
-        "Saving '{}' with {} edit(s), {} annotation(s)",
+        "Saving '{}' with {} edit(s), {} annotation(s), {} stamp(s)",
         output_path,
         edits.len(),
-        annotations.len()
+        annotations.len(),
+        stamps.len()
     );
-    engine.save(id, output_path, edits, annotations)
+    engine.save(id, output_path, edits, annotations, stamps)
 }

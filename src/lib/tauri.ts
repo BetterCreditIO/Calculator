@@ -15,6 +15,9 @@ import type {
   PageTextLayer,
   TextEdit,
   Annotation,
+  FormField,
+  FormFieldValue,
+  ImageStamp,
 } from "@/types/pdf";
 
 /** True when running inside a Tauri webview (vs. a plain browser tab). */
@@ -150,6 +153,59 @@ export function transformPages(id: string, op: PageOp): Promise<DocumentMeta> {
   return invoke<DocumentMeta>("transform_pages", { id, op });
 }
 
+/**
+ * List the document's interactive form-field widgets (empty when the PDF has
+ * no AcroForm).
+ */
+export function listFormFields(id: string): Promise<FormField[]> {
+  return invoke<FormField[]>("list_form_fields", { id });
+}
+
+/**
+ * Apply form-field values through pdfium's form-fill machinery and return the
+ * authoritative post-fill field state (a radio selection clears its group
+ * siblings, text may be truncated to the field's MaxLen, etc.). Mutates the
+ * engine's in-memory document; the file on disk changes on the next Save.
+ */
+export function fillFormFields(
+  id: string,
+  values: FormFieldValue[],
+): Promise<FormField[]> {
+  return invoke<FormField[]>("fill_form_fields", { id, values });
+}
+
+/**
+ * A batch operation over many PDF files. Mirrors the Rust `BatchOp` enum
+ * (serde internally-tagged, camelCase variants).
+ */
+export type BatchOp =
+  | { type: "rotate"; clockwiseTurns: number; outputDir: string }
+  | { type: "merge"; outputPath: string };
+
+/** One input a batch could not process (the rest of the batch continued). */
+export interface BatchFailure {
+  path: string;
+  error: string;
+}
+
+/** Outcome of a batch run. */
+export interface BatchReport {
+  processed: number;
+  outputs: string[];
+  failures: BatchFailure[];
+}
+
+/**
+ * Run a batch operation (rotate copies / merge into one packet) across many
+ * PDF files. Outputs are always NEW files — a batch never overwrites.
+ */
+export function batchProcess(
+  inputs: string[],
+  op: BatchOp,
+): Promise<BatchReport> {
+  return invoke<BatchReport>("batch_process", { inputs, op });
+}
+
 /** Write a UTF-8 text file to a user-chosen path (mortgage-estimate export). */
 export function writeTextFile(path: string, contents: string): Promise<void> {
   return invoke<void>("write_text_file", { path, contents });
@@ -164,18 +220,20 @@ export function writeBinaryFile(
 }
 
 /**
- * Persist all pending edits and annotations to a new PDF at `outputPath`.
+ * Persist all pending edits, annotations, and signature stamps to a new PDF
+ * at `outputPath`.
  *
  * The backend applies text edits by redacting the original glyph region and
- * re-stamping replacement text at the recorded geometry/size, then bakes in
- * the markup annotations. See `src-tauri/src/pdf/engine.rs` for the fidelity
- * strategy.
+ * re-stamping replacement text at the recorded geometry/size, bakes in the
+ * markup annotations, and embeds signature stamps as real image XObjects. See
+ * `src-tauri/src/pdf/engine.rs` for the fidelity strategy.
  */
 export function saveDocument(args: {
   id: string;
   outputPath: string;
   edits: TextEdit[];
   annotations: Annotation[];
+  stamps: ImageStamp[];
 }): Promise<void> {
   return invoke<void>("save_document", args);
 }

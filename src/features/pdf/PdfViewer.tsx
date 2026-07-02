@@ -11,6 +11,7 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import type { PageSize } from "@/types/pdf";
 import { useDocumentStore, MIN_SCALE, MAX_SCALE } from "@/stores/document-store";
+import { useFormStore } from "@/stores/form-store";
 import { PdfPage } from "./PdfPage";
 
 const PAGE_GAP = 24; // px between pages
@@ -75,6 +76,18 @@ export function PdfViewer() {
     observer.observe(el);
     return () => observer.disconnect();
   }, [meta, fitMode, maxPageWidth, maxPageHeight, setScale]);
+
+  // Enumerate form fields whenever the document or its page structure
+  // changes. Keyed on the meta OBJECT (not just the id): page operations
+  // return a fresh meta for the same id, and widget indices shift with them.
+  useEffect(() => {
+    const formStore = useFormStore.getState();
+    if (meta) {
+      void formStore.load(meta.id);
+    } else {
+      formStore.reset();
+    }
+  }, [meta]);
 
   // Scroll-spy: report the most-centered page as current.
   useEffect(() => {

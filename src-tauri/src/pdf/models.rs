@@ -153,6 +153,148 @@ pub enum PageOp {
     },
 }
 
+/// Kinds of interactive AcroForm field widgets surfaced to the frontend.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum FormFieldKind {
+    Text,
+    Checkbox,
+    RadioButton,
+    ComboBox,
+    ListBox,
+    Signature,
+}
+
+/// One interactive form-field widget on a page.
+///
+/// Identity is positional — `(page_index, annot_index)` names the widget
+/// annotation within its page — which stays stable across re-parses of the
+/// same document bytes and needs no synthetic id table on either side.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormField {
+    pub page_index: usize,
+    /// Index of the widget annotation within its page's annotation array.
+    pub annot_index: usize,
+    pub kind: FormFieldKind,
+    /// Fully-qualified field name (widgets of one radio group share a name).
+    pub name: Option<String>,
+    /// Widget bounds in display (top-left origin) point space.
+    pub bounds: Rect,
+    /// Current textual value (text / combo box / list box), if any.
+    pub value: Option<String>,
+    /// Current checked state (checkbox / radio button), if any.
+    pub checked: Option<bool>,
+    /// Choice options in PDF order (combo box / list box).
+    pub options: Vec<String>,
+    pub read_only: bool,
+    pub multiline: bool,
+    pub password: bool,
+    /// Whether the combo box also accepts free text (an "editable" combo).
+    pub editable: bool,
+}
+
+/// A single form-field mutation, dispatched to pdfium's form-fill machinery.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum FormFieldValue {
+    /// Replace the full text of a text field (or editable combo box).
+    #[serde(rename_all = "camelCase")]
+    Text {
+        page_index: usize,
+        annot_index: usize,
+        value: String,
+    },
+    /// Check or clear a checkbox.
+    #[serde(rename_all = "camelCase")]
+    Checkbox {
+        page_index: usize,
+        annot_index: usize,
+        checked: bool,
+    },
+    /// Select this widget within its radio group.
+    #[serde(rename_all = "camelCase")]
+    Radio { page_index: usize, annot_index: usize },
+    /// Select an option by index in a combo box or list box.
+    #[serde(rename_all = "camelCase")]
+    Choice {
+        page_index: usize,
+        annot_index: usize,
+        option_index: usize,
+    },
+}
+
+impl FormFieldValue {
+    pub fn page_index(&self) -> usize {
+        match self {
+            Self::Text { page_index, .. }
+            | Self::Checkbox { page_index, .. }
+            | Self::Radio { page_index, .. }
+            | Self::Choice { page_index, .. } => *page_index,
+        }
+    }
+
+    pub fn annot_index(&self) -> usize {
+        match self {
+            Self::Text { annot_index, .. }
+            | Self::Checkbox { annot_index, .. }
+            | Self::Radio { annot_index, .. }
+            | Self::Choice { annot_index, .. } => *annot_index,
+        }
+    }
+}
+
+/// A folder-level batch operation applied to many PDF files at once.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum BatchOp {
+    /// Rotate every page of every input by `clockwise_turns` × 90° and write
+    /// a " (rotated)" copy of each file into `output_dir`.
+    #[serde(rename_all = "camelCase")]
+    Rotate {
+        clockwise_turns: u32,
+        output_dir: String,
+    },
+    /// Merge all inputs, in selection order, into one PDF at `output_path`.
+    #[serde(rename_all = "camelCase")]
+    Merge { output_path: String },
+}
+
+/// One input that could not be processed (the batch continues without it).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchFailure {
+    pub path: String,
+    pub error: String,
+}
+
+/// Outcome of a batch run.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchReport {
+    pub processed: usize,
+    pub outputs: Vec<String>,
+    pub failures: Vec<BatchFailure>,
+}
+
+/// A placed signature (or other image) stamp to bake into the saved PDF.
+///
+/// The PNG arrives base64-encoded because Tauri's JSON IPC has no efficient
+/// raw-bytes lane for nested fields; a signature PNG is a few KB, so the
+/// overhead is immaterial.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageStamp {
+    /// Wire-contract field (frontend identity); not consumed by the baker.
+    #[allow(dead_code)]
+    pub id: String,
+    pub page_index: usize,
+    /// Placement in display (top-left origin) point space.
+    pub rect: Rect,
+    /// PNG bytes, base64-encoded (no `data:` prefix).
+    pub png_base64: String,
+}
+
 /// A pending in-place text edit to apply on save.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

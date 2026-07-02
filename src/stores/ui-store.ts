@@ -31,6 +31,16 @@ interface UiState {
   /** Active markup color (shared by highlight/underline/etc.). */
   markupColor: string;
   setMarkupColor: (color: string) => void;
+
+  /**
+   * A signature awaiting placement: after the signature dialog produces a
+   * PNG, the viewer enters "click to place" mode until the user clicks a
+   * page (or presses Escape). `aspect` = width / height of the image.
+   */
+  pendingSignature: { pngBase64: string; aspect: number } | null;
+  setPendingSignature: (
+    sig: { pngBase64: string; aspect: number } | null,
+  ) => void;
 }
 
 /** Resolve a Theme preference to the concrete light/dark value. */
@@ -72,6 +82,9 @@ export const useUiStore = create<UiState>()(
 
       markupColor: "#fde047", // amber-300, the classic highlighter yellow
       setMarkupColor: (markupColor) => set({ markupColor }),
+
+      pendingSignature: null,
+      setPendingSignature: (pendingSignature) => set({ pendingSignature }),
     }),
     {
       name: "goodboy-theme",

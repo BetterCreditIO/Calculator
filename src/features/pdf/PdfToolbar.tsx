@@ -21,11 +21,17 @@ import {
   PanelLeft,
   MoveHorizontal,
   Maximize2,
+  FormInput,
+  PenLine,
 } from "lucide-react";
+import { useState } from "react";
 import { useUiStore, type Tool } from "@/stores/ui-store";
 import { useDocumentStore, MIN_SCALE, MAX_SCALE } from "@/stores/document-store";
 import { useAnnotationStore } from "@/stores/annotation-store";
+import { useFormStore } from "@/stores/form-store";
 import { useSaveDocument } from "./use-pdf-actions";
+import { SignatureDialog } from "./SignatureDialog";
+import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
@@ -83,6 +89,13 @@ export function PdfToolbar() {
   const canUndo = useAnnotationStore((s) => s.past.length > 0);
   const canRedo = useAnnotationStore((s) => s.future.length > 0);
   const dirty = useAnnotationStore((s) => s.dirty);
+
+  const hasFormFields = useFormStore((s) => s.fields.length > 0);
+  const formHighlight = useFormStore((s) => s.highlight);
+  const toggleFormHighlight = useFormStore((s) => s.toggleHighlight);
+
+  const setPendingSignature = useUiStore((s) => s.setPendingSignature);
+  const [signatureOpen, setSignatureOpen] = useState(false);
 
   const save = useSaveDocument();
 
@@ -158,6 +171,37 @@ export function PdfToolbar() {
             </PopoverContent>
           </Popover>
         </div>
+
+        <Separator orientation="vertical" className="mx-1 h-6" />
+
+        {/* Sign */}
+        <IconButton label="Sign document" onClick={() => setSignatureOpen(true)}>
+          <PenLine className="h-4 w-4" />
+        </IconButton>
+        <SignatureDialog
+          open={signatureOpen}
+          onOpenChange={setSignatureOpen}
+          onCapture={(sig) => {
+            setPendingSignature(sig);
+            toast.show(
+              "Click where you want to sign",
+              "Click anywhere on the document to place your signature. Press Esc to cancel.",
+            );
+          }}
+        />
+
+        {/* Form fields: only shown when the document actually has them. */}
+        {hasFormFields && (
+          <IconButton
+            label={
+              formHighlight ? "Hide form field highlights" : "Highlight form fields"
+            }
+            onClick={toggleFormHighlight}
+            active={formHighlight}
+          >
+            <FormInput className="h-4 w-4" />
+          </IconButton>
+        )}
 
         <Separator orientation="vertical" className="mx-1 h-6" />
 
